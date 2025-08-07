@@ -1,0 +1,13 @@
+# Lambda-specific requirements for AgentCore proxy with observability
+# These dependencies will be packaged with the Lambda function
+
+# Core AgentCore and observability
+bedrock_agentcore_starter_toolkit
+aws-opentelemetry-distro
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation
+
+# AWS SDK (already available in Lambda runtime, but specifying for completeness)
+boto3
+botocore

@@ -1,0 +1,13 @@
+{
+  "userPoolId": "us-east-1_O6RLwBTHN",
+  "clientId": "734547mm50iohgjf1is1oa36qc",
+  "region": "us-east-1",
+  "domain": "",
+  "redirectUri": "https://d1a1j08hw40vr1.cloudfront.net",
+  "logoutUri": "https://d1a1j08hw40vr1.cloudfront.net",
+  "scopes": [
+    "phone",
+    "openid",
+    "email"
+  ]
+}

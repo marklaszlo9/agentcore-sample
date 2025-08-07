@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AgentCore Envision Chat</title>
+    <script type="importmap">
+    {
+        "imports": {
+            "oidc-client-ts": "https://cdn.skypack.dev/oidc-client-ts"
+        }
+    }
+    </script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .chat-container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+
+        .chat-header {
+            background: #2c3e50;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .chat-messages {
+            height: 400px;
+            overflow-y: auto;
+            padding: 20px;
+            border-bottom: 1px solid #eee;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 8px;
+        }
+
+        .message.user {
+            background: #e3f2fd;
+            margin-left: 20%;
+        }
+
+        .message.agent {
+            background: #f1f8e9;
+            margin-right: 20%;
+        }
+
+        .chat-input {
+            display: flex;
+            padding: 20px;
+        }
+
+        .chat-input input {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+
+        .chat-input button {
+            margin-left: 10px;
+            padding: 12px 20px;
+            background: #2c3e50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .chat-input button:hover {
+            background: #34495e;
+        }
+
+        .chat-input button:disabled {
+            background: #bdc3c7;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            color: #7f8c8d;
+            font-style: italic;
+        }
+
+        .error {
+            color: #e74c3c;
+            background: #fdf2f2;
+            border: 1px solid #fecaca;
+        }
+
+        .auth-container {
+            max-width: 400px;
+            margin: 50px auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+            text-align: center;
+        }
+
+        .auth-button {
+            background: #2c3e50;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+        }
+
+        .auth-button:hover {
+            background: #34495e;
+        }
+
+        .user-info {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 10px;
+            font-size: 14px;
+            color: #2c3e50;
+            border: 1px solid #dee2e6;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Authentication Screen -->
+    <div id="authContainer" class="auth-container">
+        <h1>Envision Framework Assistant</h1>
+        <p>Please sign in to access the chat interface</p>
+        <button id="signInButton" class="auth-button">Sign In with Cognito</button>
+    </div>
+
+    <!-- Chat Interface -->
+    <div id="chatContainer" class="chat-container hidden">
+        <div class="chat-header">
+            <h1>Envision Framework Assistant</h1>
+            <p>Ask questions about the Envision Sustainable Infrastructure Framework</p>
+            <div id="userInfo" class="user-info"></div>
+            <button id="signOutButton" class="auth-button">Sign Out</button>
+        </div>
+        <div class="chat-messages" id="messages">
+            <div class="message agent">
+                <strong>Agent:</strong> Hi there, I am your AI agent here to help with questions about the Envision
+                Sustainable Infrastructure Framework.
+            </div>
+        </div>
+        <div class="chat-input">
+            <input type="text" id="messageInput" placeholder="Ask a question about Envision..." />
+            <button onclick="sendMessage()" id="sendButton">Send</button>
+        </div>
+    </div>
+
+    <script type="module">
+        import { userManager, signOutRedirect, getCurrentUser, signIn as authSignIn, handleSigninCallback, getAccessToken } from './auth.js?v=1';
+
+        // Configuration - Update these URLs for your deployment
+        const LAMBDA_API_URL = 'https://yahmg66vc8.execute-api.us-east-1.amazonaws.com/prod/agentcore'; // Lambda proxy URL
+        const USE_LAMBDA = true; // Set to false to use direct AgentCore calls (requires AWS credentials)
+
+        // Authentication functions
+        async function handleSignIn() {
+            try {
+                await authSignIn();
+            } catch (error) {
+                console.error('Sign in error:', error);
+                alert('Sign in failed. Please try again.');
+            }
+        }
+
+        async function handleSignOut() {
+            try {
+                // Use signOutRedirect which now does local cleanup
+                await signOutRedirect();
+            } catch (error) {
+                console.error('Sign out error:', error);
+                // Force page reload as last resort
+                window.location.reload();
+            }
+        }
+
+        // Alternative: Direct AgentCore configuration (requires AWS SDK and credentials)
+        const AGENTCORE_CONFIG = {
+            region: 'us-east-1',
+            agentArn: 'arn:aws:bedrock-agentcore:us-east-1:886436945166:runtime/hosted_agent_mo6qq-qoks2s8WqG'
+        };
+
+        function getOrCreateSessionId() {
+            // Try to get the ID from session storage
+            let id = sessionStorage.getItem('bedrockChatSessionId');
+
+            // If it doesn't exist, create a new one and store it
+            if (!id) {
+                id = crypto.randomUUID(); // Generates a 36-character UUID
+                sessionStorage.setItem('bedrockChatSessionId', id);
+            }
+            return id;
+        }
+
+        // Initialize the session ID when the script loads
+        let sessionId = getOrCreateSessionId();
+        let currentUser = null;
+
+
+
+        async function initializeAuth() {
+            try {
+                // Check if we're returning from a sign-in callback
+                if (window.location.search.includes('code=')) {
+                    currentUser = await handleSigninCallback();
+                    // Clean up the URL
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                } else {
+                    currentUser = await getCurrentUser();
+                }
+
+                if (currentUser) {
+                    showChatInterface();
+                } else {
+                    showAuthInterface();
+                }
+            } catch (error) {
+                console.error('Auth initialization error:', error);
+                showAuthInterface();
+            }
+        }
+
+        function showChatInterface() {
+            document.getElementById('authContainer').classList.add('hidden');
+            document.getElementById('chatContainer').classList.remove('hidden');
+
+            if (currentUser) {
+                const userInfo = document.getElementById('userInfo');
+                userInfo.innerHTML = `Signed in as: ${currentUser.profile.email || currentUser.profile.sub}`;
+            }
+        }
+
+        function showAuthInterface() {
+            document.getElementById('authContainer').classList.remove('hidden');
+            document.getElementById('chatContainer').classList.add('hidden');
+        }
+
+
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const sendButton = document.getElementById('sendButton');
+            const message = input.value.trim();
+
+            if (!message) return;
+
+            // Add user message to chat
+            addMessage('user', message);
+            input.value = '';
+            sendButton.disabled = true;
+
+            // Add loading message
+            const loadingId = addMessage('agent', 'Thinking...', false, true);
+
+            try {
+                let response;
+
+                if (USE_LAMBDA) {
+                    // Call Lambda proxy
+                    response = await callLambdaProxy(message);
+                } else {
+                    // Call AgentCore directly (requires AWS SDK)
+                    response = await callAgentCoreDirect(message);
+                }
+
+                // Remove loading message
+                removeMessage(loadingId);
+
+                addMessage('agent', response);
+
+            } catch (error) {
+                console.error('Error sending message:', error);
+                removeMessage(loadingId);
+                addMessage('agent', 'Sorry, there was an error processing your request. Please try again.', true);
+            } finally {
+                sendButton.disabled = false;
+            }
+        }
+
+        async function callLambdaProxy(message) {
+            const accessToken = await getAccessToken();
+            const headers = {
+                'Content-Type': 'application/json',
+            };
+
+            if (accessToken) {
+                headers['Authorization'] = `Bearer ${accessToken}`;
+            }
+
+            const response = await fetch(LAMBDA_API_URL, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify({
+                    prompt: message,
+                    sessionId: sessionId
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+
+            const data = await response.json();
+            return data.response || data.error || 'No response received';
+        }
+
+        async function callAgentCoreDirect(message) {
+            // This requires AWS SDK to be loaded and AWS credentials configured
+            if (typeof AWS === 'undefined') {
+                throw new Error('AWS SDK not loaded. Please include AWS SDK or use Lambda proxy.');
+            }
+
+            const agentCoreClient = new AWS.BedrockAgentCore({
+                region: AGENTCORE_CONFIG.region
+            });
+
+            const payload = JSON.stringify({
+                prompt: message,
+                sessionId: sessionId
+            });
+
+            const params = {
+                agentRuntimeArn: AGENTCORE_CONFIG.agentArn,
+                payload: payload
+            };
+
+            const response = await agentCoreClient.invokeAgentRuntime(params).promise();
+
+            // Process the response (similar to your apitest.py logic)
+            const contentType = response.contentType || '';
+
+            if (contentType.includes('text/event-stream')) {
+                // Handle streaming response
+                const content = [];
+                for (const line of response.response.split('\n')) {
+                    if (line.startsWith('data: ')) {
+                        content.push(line.substring(6));
+                    }
+                }
+                return content.join('\n');
+            } else if (contentType === 'application/json') {
+                // Handle JSON response
+                return JSON.parse(response.response).response || response.response;
+            } else {
+                return response.response || 'No response content';
+            }
+        }
+
+        function addMessage(sender, content, isError = false, isLoading = false) {
+            const messagesContainer = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            const messageId = 'msg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+
+            messageDiv.id = messageId;
+            messageDiv.className = `message ${sender}`;
+            if (isError) messageDiv.className += ' error';
+            if (isLoading) messageDiv.className += ' loading';
+
+            messageDiv.innerHTML = `<strong>${sender === 'user' ? 'You' : 'Agent'}:</strong> ${content}`;
+
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+            return messageId;
+        }
+
+        function removeMessage(messageId) {
+            const messageElement = document.getElementById(messageId);
+            if (messageElement) {
+                messageElement.remove();
+            }
+        }
+
+        // Handle Enter key in input
+        document.getElementById('messageInput').addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // Initialize when page loads
+        window.addEventListener('load', function () {
+            console.log('Envision Agent Chat initialized with session:', sessionId);
+            
+            // Add event listeners for auth buttons
+            const signInButton = document.getElementById('signInButton');
+            const signOutButton = document.getElementById('signOutButton');
+            
+            if (signInButton) {
+                signInButton.addEventListener('click', handleSignIn);
+            }
+            
+            if (signOutButton) {
+                signOutButton.addEventListener('click', handleSignOut);
+            }
+            
+            initializeAuth();
+        });
+    </script>
+</body>
+
+</html>
