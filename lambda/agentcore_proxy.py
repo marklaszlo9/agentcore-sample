@@ -3,11 +3,13 @@ AWS Lambda function to proxy requests to AgentCore service
 This keeps AWS credentials server-side and provides a clean API for the frontend
 """
 
+import asyncio
 import json
 import logging
 import os
 import uuid
 from typing import Any, Dict
+import aiohttp
 
 import boto3
 
@@ -15,17 +17,19 @@ import boto3
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-# Initialize the Bedrock AgentCore client
-agent_core_client = boto3.client("bedrock-agentcore")
-
 # Configuration - get from environment variables
-AGENT_ARN = os.environ.get(
-    "AGENT_ARN",
-    "arn:aws:bedrock-agentcore:us-east-1:886436945166:runtime/hosted_agent_mo6qq-qoks2s8WqG",
+AGENTCORE_RUNTIME_URL = os.environ.get(
+    "AGENTCORE_RUNTIME_URL",
+    "http://localhost:8080"  # Default for local testing
 )
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """Lambda handler that calls the async handler"""
+    return asyncio.run(async_lambda_handler(event, context))
+
+
+async def async_lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     Lambda handler for AgentCore proxy requests
     """
@@ -70,32 +74,10 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         logger.info(
             f"Processing request - User: {user_info.get('email', user_info.get('sub', 'unknown'))}, Prompt: {prompt[:100]}..., SessionId: {session_id}"
         )
-        logger.info(f"Using Agent ARN: {AGENT_ARN}")
+        logger.info(f"Using AgentCore Runtime URL: {AGENTCORE_RUNTIME_URL}")
 
-        # Prepare the payload for AgentCore
-        payload = json.dumps({"prompt": prompt, "sessionId": session_id}).encode(
-            "utf-8"
-        )
-
-        logger.info(f"Payload prepared: {len(payload)} bytes")
-
-        # Generate a random trace ID (keep it short to avoid AgentCore issues)
-        trace_id = str(uuid.uuid4())[:8]
-
-        # Invoke the AgentCore service
-        logger.info(f"Invoking AgentCore service with traceId: {trace_id}")
-
-        response = agent_core_client.invoke_agent_runtime(
-            agentRuntimeArn=AGENT_ARN,
-            traceId=trace_id,
-            runtimeSessionId=session_id,
-            payload=payload,
-        )
-
-        logger.info(f"AgentCore response received: {type(response)}")
-
-        # Process the response
-        agent_response = process_agentcore_response(response)
+        # Call the containerized AgentCore runtime
+        agent_response = await call_agentcore_runtime(prompt, session_id)
 
         # Return successful response
         return {
@@ -130,6 +112,70 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 {"error": f"Internal server error: {str(e)}", "statusCode": 500}
             ),
         }
+
+
+
+
+
+def extract_user_from_context(event: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract user information from API Gateway request context
+    (API Gateway Cognito Authorizer populates this)
+    """
+    try:
+        # API Gateway puts Cognito user info in requestContext.authorizer.claims
+        request_context = event.get("requestContext", {})
+        authorizer = request_context.get("authorizer", {})
+        claims = authorizer.get("claims", {})
+        
+        if claims:
+            logger.info(f"User authenticated: {claims.get('email', claims.get('sub', 'unknown'))}")
+            return claims
+        
+        # Fallback: try to get from other locations in the context
+        cognito_identity_id = request_context.get("identity", {}).get("cognitoIdentityId")
+        if cognito_identity_id:
+            return {"sub": cognito_identity_id}
+            
+        logger.warning("No user information found in request context")
+        return {"sub": "unknown"}
+        
+    except Exception as e:
+        logger.error(f"Error extracting user from context: {str(e)}")
+        return {"sub": "unknown"}
+
+
+async def call_agentcore_runtime(prompt: str, session_id: str) -> str:
+    """Call the containerized AgentCore runtime"""
+    try:
+        payload = {
+            "prompt": prompt,
+            "sessionId": session_id
+        }
+        
+        timeout = aiohttp.ClientTimeout(total=120)  # 2 minute timeout
+        
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                f"{AGENTCORE_RUNTIME_URL}/query",
+                json=payload,
+                headers={"Content-Type": "application/json"}
+            ) as response:
+                
+                if response.status == 200:
+                    result = await response.json()
+                    return result.get("response", "No response received")
+                else:
+                    error_text = await response.text()
+                    logger.error(f"AgentCore runtime error {response.status}: {error_text}")
+                    return f"I apologize, but I'm experiencing technical difficulties. Please try again later."
+                    
+    except asyncio.TimeoutError:
+        logger.error("Timeout calling AgentCore runtime")
+        return "I apologize, but the request timed out. Please try again with a shorter question."
+    except Exception as e:
+        logger.error(f"Error calling AgentCore runtime: {e}")
+        return f"I apologize, but I encountered an error: {str(e)}"
 
 
 def process_agentcore_response(response: Dict[str, Any]) -> str:
@@ -233,34 +279,6 @@ def process_agentcore_response(response: Dict[str, Any]) -> str:
     except Exception as e:
         logger.error(f"Error processing AgentCore response: {str(e)}", exc_info=True)
         return f"Error processing response: {str(e)}"
-
-
-def extract_user_from_context(event: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Extract user information from API Gateway request context
-    (API Gateway Cognito Authorizer populates this)
-    """
-    try:
-        # API Gateway puts Cognito user info in requestContext.authorizer.claims
-        request_context = event.get("requestContext", {})
-        authorizer = request_context.get("authorizer", {})
-        claims = authorizer.get("claims", {})
-        
-        if claims:
-            logger.info(f"User authenticated: {claims.get('email', claims.get('sub', 'unknown'))}")
-            return claims
-        
-        # Fallback: try to get from other locations in the context
-        cognito_identity_id = request_context.get("identity", {}).get("cognitoIdentityId")
-        if cognito_identity_id:
-            return {"sub": cognito_identity_id}
-            
-        logger.warning("No user information found in request context")
-        return {"sub": "unknown"}
-        
-    except Exception as e:
-        logger.error(f"Error extracting user from context: {str(e)}")
-        return {"sub": "unknown"}
 
 
 def create_error_response(status_code: int, message: str) -> Dict[str, Any]:

@@ -3,6 +3,9 @@ bedrock-agentcore
 boto3
 uv
 
+# Multi-agent system dependencies
+strands
+
 # Observability and instrumentation
 bedrock_agentcore_starter_toolkit
 aws-opentelemetry-distro

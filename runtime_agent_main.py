@@ -17,6 +17,16 @@ from aiohttp import web, web_request
 
 from custom_agent import CustomEnvisionAgent
 
+# Try to import multi-agent orchestrator
+try:
+    from multi_agent_orchestrator import EnvisionMultiAgentOrchestrator
+    MULTI_AGENT_AVAILABLE = True
+    logger.info("✅ Multi-agent orchestrator available")
+except ImportError as e:
+    MULTI_AGENT_AVAILABLE = False
+    logger.warning(f"⚠️ Multi-agent orchestrator not available: {str(e)}")
+    logger.info("Falling back to single agent mode")
+
 
 @web.middleware
 async def access_log_middleware(request, handler):
@@ -212,40 +222,62 @@ class AgentCoreRuntime:
     def __init__(self):
         """Initialize the AgentCore runtime"""
         self.agent = None
+        self.multi_agent_orchestrator = None
 
         # Get configuration from environment
         self.model_id = os.environ.get("MODEL_ID", "us.amazon.nova-micro-v1:0")
         self.region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
         self.knowledge_base_id = os.environ.get("KNOWLEDGE_BASE_ID")
         self.memory_id = os.environ.get("AGENTCORE_MEMORY_ID")
+        self.use_multi_agent = os.environ.get("USE_MULTI_AGENT", "true").lower() == "true"
 
         logger.info(
-            f"Runtime configuration: model={self.model_id}, region={self.region}, kb={self.knowledge_base_id}, memory={self.memory_id}"
+            f"Runtime configuration: model={self.model_id}, region={self.region}, kb={self.knowledge_base_id}, memory={self.memory_id}, multi_agent={self.use_multi_agent}"
         )
 
     async def initialize_agent(self) -> CustomEnvisionAgent:
-        """Initialize the custom agent"""
+        """Initialize the custom agent and/or multi-agent orchestrator"""
         try:
-            self.agent = CustomEnvisionAgent(
-                model_id=self.model_id,
-                region=self.region,
-                knowledge_base_id=self.knowledge_base_id,
-                memory_id=self.memory_id,
-            )
+            # Initialize multi-agent orchestrator if available and enabled
+            if MULTI_AGENT_AVAILABLE and self.use_multi_agent:
+                try:
+                    self.multi_agent_orchestrator = EnvisionMultiAgentOrchestrator(region=self.region)
+                    logger.info("✅ Multi-agent orchestrator initialized successfully")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize multi-agent orchestrator: {e}")
+                    logger.info("Falling back to single agent mode")
+                    self.use_multi_agent = False
 
-            logger.info("✅ Agent initialized successfully")
+            # Initialize single agent as fallback or primary
+            if not self.use_multi_agent or not self.multi_agent_orchestrator:
+                self.agent = CustomEnvisionAgent(
+                    model_id=self.model_id,
+                    region=self.region,
+                    knowledge_base_id=self.knowledge_base_id,
+                    memory_id=self.memory_id,
+                )
+                logger.info("✅ Single agent initialized successfully")
+
             return self.agent
 
         except Exception as e:
             logger.error(f"Failed to initialize agent: {str(e)}")
             raise
 
-    async def process_query(self, query: str, use_rag: bool = True) -> str:
-        """Process a query"""
+    async def process_query(self, query: str, session_id: str = "default", use_rag: bool = True) -> str:
+        """Process a query using multi-agent orchestrator or single agent"""
         try:
-            if not self.agent:
+            if not self.agent and not self.multi_agent_orchestrator:
                 await self.initialize_agent()
 
+            # Use multi-agent orchestrator if available
+            if self.multi_agent_orchestrator and self.use_multi_agent:
+                logger.info("Processing query through multi-agent orchestrator")
+                response = await self.multi_agent_orchestrator.process_query(query, session_id)
+                return response
+
+            # Fallback to single agent
+            logger.info("Processing query through single agent")
             if use_rag and self.knowledge_base_id:
                 response = await self.agent.query_with_rag(query)
             else:
@@ -265,6 +297,9 @@ class AgentCoreRuntime:
                 "agentcore_runtime_available": AGENTCORE_RUNTIME_AVAILABLE,
                 "agentcore_runtime_initialized": agentcore_runtime is not None,
                 "agent_initialized": self.agent is not None,
+                "multi_agent_available": MULTI_AGENT_AVAILABLE,
+                "multi_agent_enabled": self.use_multi_agent,
+                "multi_agent_initialized": self.multi_agent_orchestrator is not None,
                 "configuration": {
                     "model_id": self.model_id,
                     "region": self.region,
@@ -332,8 +367,9 @@ class AgentCoreRuntime:
 
                     # Process query
                     interaction_count += 1
+                    session_id = f"interactive_session_{interaction_count}"
                     print("\n🤖 Agent: ", end="", flush=True)
-                    response = await self.process_query(user_input)
+                    response = await self.process_query(user_input, session_id)
                     print(response)
 
                 except KeyboardInterrupt:
@@ -401,10 +437,9 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
                 {"error": "Invalid JSON in request body"}, status=400
             )
 
-        # Extract prompt from request (try different field names)
+        # Extract prompt and session_id from request
         prompt = None
-        # Extract session_id for potential future use
-        # session_id = body.get("sessionId", "")
+        session_id = body.get("sessionId", "default")
 
         for field in ["prompt", "query", "message", "input", "text"]:
             if field in body:
@@ -422,7 +457,7 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
 
         # Process the query
         try:
-            response = await runtime_instance.process_query(prompt)
+            response = await runtime_instance.process_query(prompt, session_id)
             # Log agent response to separate prompt log group
             prompt_logger.info(f"AGENT_RESPONSE: {response}")
             # Keep abbreviated response in main log for debugging

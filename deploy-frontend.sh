@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # Deploy Envision Agent Frontend to S3 + CloudFront + Lambda with Cognito Authentication
-# Usage: ./deploy-frontend.sh [stack-name] [agent-runtime-arn] [cognito-user-pool-id] [cognito-client-id]
+# Usage: ./deploy-frontend.sh [stack-name] [agentcore-runtime-url] [cognito-user-pool-id] [cognito-client-id]
 
 set -e
 
 # Configuration
 STACK_NAME=${1:-"envision-agent-frontend"}
-AGENT_RUNTIME_ARN=${2:-"arn:aws:bedrock-agentcore:us-east-1:886436945166:runtime/hosted_agent_mo6qq-qoks2s8WqG"}
+AGENTCORE_RUNTIME_URL=${2:-"http://localhost:8080"}
 COGNITO_USER_POOL_ID=${3:-"us-east-1_O6RLwBTHN"}
 COGNITO_CLIENT_ID=${4:-"734547mm50iohgjf1is1oa36qc"}
 REGION=${AWS_DEFAULT_REGION:-"us-east-1"}
@@ -15,7 +15,7 @@ REGION=${AWS_DEFAULT_REGION:-"us-east-1"}
 echo "🚀 Deploying Envision Agent Frontend with Cognito Authentication"
 echo "=============================================================="
 echo "Stack Name: $STACK_NAME"
-echo "Agent Runtime ARN: $AGENT_RUNTIME_ARN"
+echo "AgentCore Runtime URL: $AGENTCORE_RUNTIME_URL"
 echo "Cognito User Pool ID: $COGNITO_USER_POOL_ID"
 echo "Cognito Client ID: $COGNITO_CLIENT_ID"
 echo "Region: $REGION"
@@ -33,7 +33,7 @@ aws cloudformation deploy \
     --template-file infrastructure/frontend-infrastructure.yaml \
     --stack-name "$STACK_NAME" \
     --parameter-overrides \
-        AgentRuntimeArn="$AGENT_RUNTIME_ARN" \
+        AgentCoreRuntimeUrl="$AGENTCORE_RUNTIME_URL" \
         CognitoUserPoolId="$COGNITO_USER_POOL_ID" \
         CognitoClientId="$COGNITO_CLIENT_ID" \
     --capabilities CAPABILITY_IAM \
