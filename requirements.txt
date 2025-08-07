@@ -4,7 +4,7 @@ boto3
 uv
 
 # Multi-agent system dependencies
-strands
+strands-agents
 
 # Observability and instrumentation
 bedrock_agentcore_starter_toolkit
