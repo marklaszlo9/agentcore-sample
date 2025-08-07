@@ -1,4 +1,4 @@
-# Lambda-specific requirements for AgentCore Runtime proxy
+# Lambda-specific requirements for AgentCore proxy
 # These dependencies will be packaged with the Lambda function
 
 # Observability

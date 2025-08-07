@@ -8,9 +8,6 @@ import logging
 import os
 import uuid
 from typing import Any, Dict
-import urllib.request
-import urllib.parse
-import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
 
@@ -21,10 +18,13 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # Configuration - get from environment variables
-AGENTCORE_RUNTIME_URL = os.environ.get(
-    "AGENTCORE_RUNTIME_URL",
-    "http://localhost:8080"  # Default for local testing
+AGENT_ARN = os.environ.get(
+    "AGENT_ARN",
+    "arn:aws:bedrock-agentcore:us-east-1:886436945166:runtime/hosted_agent_sample-KEQNVq8Whv",
 )
+
+# Initialize the Bedrock AgentCore client
+agent_core_client = boto3.client("bedrock-agentcore")
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -77,9 +77,9 @@ async def async_lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str,
         logger.info(
             f"Processing request - User: {user_info.get('email', user_info.get('sub', 'unknown'))}, Prompt: {prompt[:100]}..., SessionId: {session_id}"
         )
-        logger.info(f"Using AgentCore Runtime URL: {AGENTCORE_RUNTIME_URL}")
+        logger.info(f"Using Agent ARN: {AGENT_ARN}")
 
-        # Call the containerized AgentCore runtime
+        # Call the AgentCore runtime via ARN
         agent_response = await call_agentcore_runtime(prompt, session_id)
 
         # Return successful response
@@ -149,43 +149,34 @@ def extract_user_from_context(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def call_agentcore_runtime_sync(prompt: str, session_id: str) -> str:
-    """Call the containerized AgentCore runtime synchronously with fallback"""
+    """Call the AgentCore runtime via ARN"""
     try:
-        payload = {
-            "prompt": prompt,
-            "sessionId": session_id
-        }
+        # Prepare the payload for AgentCore
+        payload = json.dumps({"prompt": prompt, "sessionId": session_id}).encode("utf-8")
         
-        # Prepare the request
-        data = json.dumps(payload).encode('utf-8')
-        url = f"{AGENTCORE_RUNTIME_URL}/invocations"
-        
-        req = urllib.request.Request(
-            url,
-            data=data,
-            headers={
-                'Content-Type': 'application/json',
-                'User-Agent': 'Lambda-AgentCore-Proxy/1.0'
-            }
+        logger.info(f"Payload prepared: {len(payload)} bytes")
+
+        # Generate a random trace ID (keep it short to avoid AgentCore issues)
+        trace_id = str(uuid.uuid4())[:8]
+
+        # Invoke the AgentCore service
+        logger.info(f"Invoking AgentCore service with traceId: {trace_id}")
+
+        response = agent_core_client.invoke_agent_runtime(
+            agentRuntimeArn=AGENT_ARN,
+            traceId=trace_id,
+            runtimeSessionId=session_id,
+            payload=payload,
         )
-        
-        # Make the request with timeout
-        with urllib.request.urlopen(req, timeout=30) as response:
-            if response.status == 200:
-                result = response.read().decode('utf-8')
-                logger.info(f"AgentCore runtime response received: {len(result)} chars")
-                return result
-            else:
-                error_text = response.read().decode('utf-8')
-                logger.error(f"AgentCore runtime error {response.status}: {error_text}")
-                return get_fallback_response(prompt)
+
+        logger.info(f"AgentCore response received: {type(response)}")
+
+        # Process the response
+        agent_response = process_agentcore_response(response)
+        return agent_response
                 
-    except urllib.error.URLError as e:
-        logger.warning(f"Cannot connect to AgentCore runtime: {e}")
-        logger.info("Using fallback response")
-        return get_fallback_response(prompt)
     except Exception as e:
-        logger.error(f"Unexpected error calling AgentCore runtime: {e}")
+        logger.error(f"Error calling AgentCore runtime: {e}")
         return get_fallback_response(prompt)
 
 
