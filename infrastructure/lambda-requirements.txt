@@ -1,9 +1,6 @@
 # Lambda-specific requirements for AgentCore Runtime proxy
 # These dependencies will be packaged with the Lambda function
 
-# HTTP client for calling AgentCore runtime
-aiohttp
-
 # Observability
 aws-opentelemetry-distro
 opentelemetry-api

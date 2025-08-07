@@ -9,8 +9,28 @@ from typing import Dict, Any, List, Optional
 import asyncio
 from strands import Agent
 from strands.hooks import AgentInitializedEvent, HookProvider, HookRegistry, MessageAddedEvent
-from bedrock_agentcore.memory import MemoryClient
-from bedrock_agentcore import BedrockAgentCoreClient
+
+# Try to import AgentCore components with fallbacks
+try:
+    from bedrock_agentcore.memory import MemoryClient
+except ImportError:
+    # Fallback for different package structure
+    try:
+        from bedrock_agentcore_starter_toolkit.memory import MemoryClient
+    except ImportError:
+        MemoryClient = None
+
+try:
+    from bedrock_agentcore import BedrockAgentCoreClient
+except ImportError:
+    # Try alternative imports
+    try:
+        from bedrock_agentcore_starter_toolkit import BedrockAgentCoreClient
+    except ImportError:
+        try:
+            from bedrock_agentcore_starter_toolkit.client import BedrockAgentCoreClient
+        except ImportError:
+            BedrockAgentCoreClient = None
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -103,9 +123,26 @@ class EnvisionMultiAgentOrchestrator:
         """Initialize the orchestrator with all agents and AgentCore integration"""
         self.region = region
         
-        # Initialize AgentCore client and memory
-        self.agentcore_client = BedrockAgentCoreClient(region=region)
-        self.memory_client = MemoryClient(region=region)
+        # Initialize AgentCore client and memory with fallbacks
+        if BedrockAgentCoreClient:
+            try:
+                self.agentcore_client = BedrockAgentCoreClient(region=region)
+            except Exception as e:
+                logger.warning(f"Could not initialize BedrockAgentCoreClient: {e}")
+                self.agentcore_client = None
+        else:
+            logger.warning("BedrockAgentCoreClient not available")
+            self.agentcore_client = None
+            
+        if MemoryClient:
+            try:
+                self.memory_client = MemoryClient(region=region)
+            except Exception as e:
+                logger.warning(f"Could not initialize MemoryClient: {e}")
+                self.memory_client = None
+        else:
+            logger.warning("MemoryClient not available")
+            self.memory_client = None
         
         # Initialize hook registry and providers
         self.hook_registry = HookRegistry()
@@ -116,12 +153,12 @@ class EnvisionMultiAgentOrchestrator:
         self.hook_registry.register_provider(self.routing_hook_provider)
         self.hook_registry.register_provider(self.knowledge_hook_provider)
         
-        # Initialize agents with AgentCore integration
+        # Initialize agents with available components
         self.orchestrator = self._create_orchestrator_agent()
         self.knowledge_agent = self._create_knowledge_agent()
         self.general_sustainability_agent = self._create_general_sustainability_agent()
         
-        logger.info("Multi-agent orchestrator with AgentCore initialized successfully")
+        logger.info("Multi-agent orchestrator initialized successfully")
     
     def _create_orchestrator_agent(self) -> Agent:
         """Create the orchestrator agent that decides which specialist to use"""
@@ -155,14 +192,20 @@ IMPORTANT: You must respond with ONLY a JSON object in this exact format:
 
 Do not include any other text, explanations, or formatting. Only return the JSON object."""
 
-        return Agent(
-            name="orchestrator",
-            model="anthropic.claude-3-5-sonnet-20241022-v2:0",
-            instructions=orchestrator_prompt,
-            hook_registry=self.hook_registry,
-            memory_client=self.memory_client,
-            agentcore_client=self.agentcore_client
-        )
+        agent_kwargs = {
+            "name": "orchestrator",
+            "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "instructions": orchestrator_prompt,
+            "hook_registry": self.hook_registry
+        }
+        
+        # Add optional components if available
+        if self.memory_client:
+            agent_kwargs["memory_client"] = self.memory_client
+        if self.agentcore_client:
+            agent_kwargs["agentcore_client"] = self.agentcore_client
+            
+        return Agent(**agent_kwargs)
     
     def _create_knowledge_agent(self) -> Agent:
         """Create the knowledge base agent for Envision-specific queries"""
@@ -187,16 +230,20 @@ When answering questions:
 
 Focus on being helpful, accurate, and actionable in your responses."""
 
-        return Agent(
-            name="knowledge_agent",
-            model="anthropic.claude-3-5-sonnet-20241022-v2:0",
-            instructions=knowledge_prompt,
-            hook_registry=self.hook_registry,
-            memory_client=self.memory_client,
-            agentcore_client=self.agentcore_client
-            # Note: In a real implementation, you would add knowledge base tools here
-            # tools=[knowledge_base_tool]
-        )
+        agent_kwargs = {
+            "name": "knowledge_agent",
+            "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "instructions": knowledge_prompt,
+            "hook_registry": self.hook_registry
+        }
+        
+        # Add optional components if available
+        if self.memory_client:
+            agent_kwargs["memory_client"] = self.memory_client
+        if self.agentcore_client:
+            agent_kwargs["agentcore_client"] = self.agentcore_client
+            
+        return Agent(**agent_kwargs)
     
     def _create_general_sustainability_agent(self) -> Agent:
         """Create the general sustainability agent for broader topics"""
@@ -223,14 +270,20 @@ When answering questions:
 
 Your goal is to educate and inform about sustainability topics in a way that's actionable and relevant to infrastructure and development professionals."""
 
-        return Agent(
-            name="general_sustainability_agent",
-            model="anthropic.claude-3-5-sonnet-20241022-v2:0",
-            instructions=general_prompt,
-            hook_registry=self.hook_registry,
-            memory_client=self.memory_client,
-            agentcore_client=self.agentcore_client
-        )
+        agent_kwargs = {
+            "name": "general_sustainability_agent",
+            "model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+            "instructions": general_prompt,
+            "hook_registry": self.hook_registry
+        }
+        
+        # Add optional components if available
+        if self.memory_client:
+            agent_kwargs["memory_client"] = self.memory_client
+        if self.agentcore_client:
+            agent_kwargs["agentcore_client"] = self.agentcore_client
+            
+        return Agent(**agent_kwargs)
     
     async def process_query(self, user_query: str, session_id: str) -> str:
         """
@@ -263,17 +316,21 @@ Your goal is to educate and inform about sustainability topics in a way that's a
                     orchestrator_response["reasoning"]
                 )
             
-            # Step 3: Store in memory for context using AgentCore MemoryClient
-            await self.memory_client.add_message(
-                session_id=session_id,
-                role="user",
-                content=user_query
-            )
-            await self.memory_client.add_message(
-                session_id=session_id,
-                role="assistant", 
-                content=response
-            )
+            # Step 3: Store in memory for context
+            if self.memory_client:
+                try:
+                    await self.memory_client.add_message(
+                        session_id=session_id,
+                        role="user",
+                        content=user_query
+                    )
+                    await self.memory_client.add_message(
+                        session_id=session_id,
+                        role="assistant", 
+                        content=response
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not store conversation in memory: {e}")
             
             return response
             
@@ -284,9 +341,16 @@ Your goal is to educate and inform about sustainability topics in a way that's a
     async def _get_orchestrator_decision(self, query: str, session_id: str) -> Dict[str, str]:
         """Get the orchestrator's decision on which agent to use"""
         try:
-            # Get conversation history for context using AgentCore MemoryClient
-            history = await self.memory_client.get_messages(session_id=session_id, max_messages=10)
-            context = self._format_conversation_history(history)
+            # Get conversation history for context
+            if self.memory_client:
+                try:
+                    history = await self.memory_client.get_messages(session_id=session_id, max_messages=10)
+                    context = self._format_conversation_history(history)
+                except Exception as e:
+                    logger.warning(f"Could not get conversation history: {e}")
+                    context = "No previous conversation."
+            else:
+                context = "No previous conversation."
             
             # Create a message for the orchestrator
             message = {
@@ -343,8 +407,15 @@ Analyze this question and decide which agent should handle it."""
             logger.info(f"Routing to knowledge agent: {reasoning}")
             
             # Get relevant conversation history
-            history = await self.memory_client.get_messages(session_id=session_id, max_messages=6)
-            context = self._format_conversation_history(history)
+            if self.memory_client:
+                try:
+                    history = await self.memory_client.get_messages(session_id=session_id, max_messages=6)
+                    context = self._format_conversation_history(history)
+                except Exception as e:
+                    logger.warning(f"Could not get conversation history: {e}")
+                    context = "No previous conversation."
+            else:
+                context = "No previous conversation."
             
             # Create message for the knowledge agent
             message = {
@@ -373,8 +444,15 @@ Please provide a detailed response based on the Envision Sustainable Infrastruct
             logger.info(f"Routing to general sustainability agent: {reasoning}")
             
             # Get relevant conversation history
-            history = await self.memory_client.get_messages(session_id=session_id, max_messages=6)
-            context = self._format_conversation_history(history)
+            if self.memory_client:
+                try:
+                    history = await self.memory_client.get_messages(session_id=session_id, max_messages=6)
+                    context = self._format_conversation_history(history)
+                except Exception as e:
+                    logger.warning(f"Could not get conversation history: {e}")
+                    context = "No previous conversation."
+            else:
+                context = "No previous conversation."
             
             # Create message for the general agent
             message = {

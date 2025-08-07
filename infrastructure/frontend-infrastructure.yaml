@@ -5,8 +5,7 @@ Parameters:
   AgentRuntimeArn:
     Type: String
     Description: 'ARN of the AgentCore runtime'
-    Default: 'arn:aws:bedrock-agentcore:us-east-1:886436945166:runtime/hosted_agent_mo6qq-qoks2s8WqG'
-  
+    Default: 'arn:aws:bedrock-agentcore:us-east-1:886436945166:runtime/hosted_agent_sample-KEQNVq8Whv'
   DomainName:
     Type: String
     Description: 'Custom domain name (optional)'

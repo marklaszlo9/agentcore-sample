@@ -3,13 +3,16 @@ AWS Lambda function to proxy requests to AgentCore service
 This keeps AWS credentials server-side and provides a clean API for the frontend
 """
 
-import asyncio
 import json
 import logging
 import os
 import uuid
 from typing import Any, Dict
-import aiohttp
+import urllib.request
+import urllib.parse
+import urllib.error
+from concurrent.futures import ThreadPoolExecutor
+import asyncio
 
 import boto3
 
@@ -145,37 +148,103 @@ def extract_user_from_context(event: Dict[str, Any]) -> Dict[str, Any]:
         return {"sub": "unknown"}
 
 
-async def call_agentcore_runtime(prompt: str, session_id: str) -> str:
-    """Call the containerized AgentCore runtime"""
+def call_agentcore_runtime_sync(prompt: str, session_id: str) -> str:
+    """Call the containerized AgentCore runtime synchronously with fallback"""
     try:
         payload = {
             "prompt": prompt,
             "sessionId": session_id
         }
         
-        timeout = aiohttp.ClientTimeout(total=120)  # 2 minute timeout
+        # Prepare the request
+        data = json.dumps(payload).encode('utf-8')
+        url = f"{AGENTCORE_RUNTIME_URL}/invocations"
         
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                f"{AGENTCORE_RUNTIME_URL}/query",
-                json=payload,
-                headers={"Content-Type": "application/json"}
-            ) as response:
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                'Content-Type': 'application/json',
+                'User-Agent': 'Lambda-AgentCore-Proxy/1.0'
+            }
+        )
+        
+        # Make the request with timeout
+        with urllib.request.urlopen(req, timeout=30) as response:
+            if response.status == 200:
+                result = response.read().decode('utf-8')
+                logger.info(f"AgentCore runtime response received: {len(result)} chars")
+                return result
+            else:
+                error_text = response.read().decode('utf-8')
+                logger.error(f"AgentCore runtime error {response.status}: {error_text}")
+                return get_fallback_response(prompt)
                 
-                if response.status == 200:
-                    result = await response.json()
-                    return result.get("response", "No response received")
-                else:
-                    error_text = await response.text()
-                    logger.error(f"AgentCore runtime error {response.status}: {error_text}")
-                    return f"I apologize, but I'm experiencing technical difficulties. Please try again later."
-                    
-    except asyncio.TimeoutError:
-        logger.error("Timeout calling AgentCore runtime")
-        return "I apologize, but the request timed out. Please try again with a shorter question."
+    except urllib.error.URLError as e:
+        logger.warning(f"Cannot connect to AgentCore runtime: {e}")
+        logger.info("Using fallback response")
+        return get_fallback_response(prompt)
     except Exception as e:
-        logger.error(f"Error calling AgentCore runtime: {e}")
-        return f"I apologize, but I encountered an error: {str(e)}"
+        logger.error(f"Unexpected error calling AgentCore runtime: {e}")
+        return get_fallback_response(prompt)
+
+
+async def call_agentcore_runtime(prompt: str, session_id: str) -> str:
+    """Async wrapper for the synchronous runtime call"""
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        return await loop.run_in_executor(executor, call_agentcore_runtime_sync, prompt, session_id)
+
+
+def get_fallback_response(prompt: str) -> str:
+    """Provide a fallback response when the containerized runtime is not available"""
+    
+    # Simple keyword-based routing for fallback
+    prompt_lower = prompt.lower()
+    
+    if any(keyword in prompt_lower for keyword in ["envision", "credit", "category", "scoring", "assessment"]):
+        return f"""Thank you for your question about the Envision Sustainable Infrastructure Framework.
+
+Your question: "{prompt}"
+
+I'm currently operating in simplified mode. Here's some general guidance about the Envision framework:
+
+**Envision Framework Overview:**
+The Envision framework includes five main categories:
+
+1. **Quality of Life (QL)** - Improve community quality of life
+2. **Leadership (LD)** - Provide effective leadership and commitment  
+3. **Resource Allocation (RA)** - Allocate material and energy resources efficiently
+4. **Natural World (NW)** - Protect and restore the natural world
+5. **Climate and Resilience (CR)** - Adapt to changing conditions and prepare for long-term resilience
+
+Each category contains specific credits that projects can pursue for sustainability recognition. The framework helps infrastructure projects achieve higher levels of sustainability and resilience.
+
+For detailed information about specific credits and implementation guidance, please try again later when the full system is available."""
+
+    else:
+        return f"""Thank you for your sustainability question.
+
+Your question: "{prompt}"
+
+I'm currently operating in simplified mode. Here's some general sustainability guidance:
+
+**General Sustainability Principles:**
+- Consider environmental, social, and economic impacts in your decision-making
+- Look for opportunities to reduce resource consumption and waste
+- Implement renewable energy and efficient systems where possible
+- Engage stakeholders and communities in sustainable development
+- Follow circular economy principles to minimize waste
+- Consider life-cycle impacts of materials and processes
+
+**Key Frameworks to Consider:**
+- UN Sustainable Development Goals (SDGs)
+- LEED Green Building Standards
+- BREEAM Environmental Assessment
+- ISO 14001 Environmental Management
+- GRI Sustainability Reporting Standards
+
+For more detailed and personalized guidance, please try again later when the full AI system is available."""
 
 
 def process_agentcore_response(response: Dict[str, Any]) -> str:

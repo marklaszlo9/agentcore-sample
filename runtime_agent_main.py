@@ -17,15 +17,15 @@ from aiohttp import web, web_request
 
 from custom_agent import CustomEnvisionAgent
 
-# Try to import multi-agent orchestrator
+# Try to import multi-agent orchestrator (after logger is defined)
+MULTI_AGENT_AVAILABLE = False
+multi_agent_orchestrator_error = None
+
 try:
     from multi_agent_orchestrator import EnvisionMultiAgentOrchestrator
     MULTI_AGENT_AVAILABLE = True
-    logger.info("✅ Multi-agent orchestrator available")
 except ImportError as e:
-    MULTI_AGENT_AVAILABLE = False
-    logger.warning(f"⚠️ Multi-agent orchestrator not available: {str(e)}")
-    logger.info("Falling back to single agent mode")
+    multi_agent_orchestrator_error = str(e)
 
 
 @web.middleware
@@ -212,6 +212,13 @@ if AGENTCORE_RUNTIME_AVAILABLE:
         logger.info("✅ AgentCore Runtime initialized with observability")
     except Exception as e:
         logger.warning(f"Could not initialize AgentCore Runtime: {str(e)}")
+
+# Log multi-agent orchestrator status now that logger is available
+if MULTI_AGENT_AVAILABLE:
+    logger.info("✅ Multi-agent orchestrator available")
+else:
+    logger.warning(f"⚠️ Multi-agent orchestrator not available: {multi_agent_orchestrator_error}")
+    logger.info("Falling back to single agent mode")
 
 
 class AgentCoreRuntime:

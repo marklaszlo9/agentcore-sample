@@ -10,8 +10,7 @@ input_text = "Hello, how can you assist me today?"
   
 # Prepare the payload
 payload = json.dumps({"prompt": input_text}).encode()
-agent_arn = "arn:aws:bedrock-agentcore:us-east-1:886436945166:runtime/hosted_agent_mo6qq-qoks2s8WqG"
-# Invoke the agent
+agent_arn = "arn:aws:bedrock-agentcore:us-east-1:886436945166:runtime/hosted_agent_sample-KEQNVq8Whv"
 response = agent_core_client.invoke_agent_runtime(
     agentRuntimeArn=agent_arn,
     payload=payload
