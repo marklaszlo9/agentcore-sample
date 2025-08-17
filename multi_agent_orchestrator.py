@@ -317,7 +317,7 @@ Focus on being helpful, accurate, and actionable in your responses."""
 
         agent_kwargs = {
             "name": "knowledge_agent",
-            "model": "anthropic.claude-3-7-sonnet-20250219-v1:0",
+            "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
             "system_prompt": knowledge_prompt,
             "hooks": self.hook_providers,
         }
