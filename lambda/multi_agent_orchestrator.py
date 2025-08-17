@@ -273,7 +273,7 @@ Do not include any other text, explanations, or formatting. Only return the JSON
         return Agent(
             name="orchestrator",
             model="anthropic.claude-3-5-sonnet-20241022-v2:0",
-            instructions=orchestrator_prompt,
+            system_prompt=orchestrator_prompt,
             hooks=self.hook_providers,
             memory_client=self.memory_client,
             agentcore_client=self.agentcore_client,
@@ -305,7 +305,7 @@ Focus on being helpful, accurate, and actionable in your responses."""
         return Agent(
             name="knowledge_agent",
             model="anthropic.claude-3-5-sonnet-20241022-v2:0",
-            instructions=knowledge_prompt,
+            system_prompt=knowledge_prompt,
             hooks=self.hook_providers,
             memory_client=self.memory_client,
             agentcore_client=self.agentcore_client,
@@ -341,7 +341,7 @@ Your goal is to educate and inform about sustainability topics in a way that's a
         return Agent(
             name="general_sustainability_agent",
             model="anthropic.claude-3-5-sonnet-20241022-v2:0",
-            instructions=general_prompt,
+            system_prompt=general_prompt,
             hooks=self.hook_providers,
             memory_client=self.memory_client,
             agentcore_client=self.agentcore_client,

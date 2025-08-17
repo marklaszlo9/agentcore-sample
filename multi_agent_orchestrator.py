@@ -286,7 +286,7 @@ Do not include any other text, explanations, or formatting. Only return the JSON
         agent_kwargs = {
             "name": "orchestrator",
             "model": "us.amazon.nova-micro-v1:0",
-            "instructions": orchestrator_prompt,
+            "system_prompt": orchestrator_prompt,
             "hooks": self.hook_providers,
         }
 
@@ -324,7 +324,7 @@ Focus on being helpful, accurate, and actionable in your responses."""
         agent_kwargs = {
             "name": "knowledge_agent",
             "model": "anthropic.claude-sonnet-4-20250514-v1:0",
-            "instructions": knowledge_prompt,
+            "system_prompt": knowledge_prompt,
             "hooks": self.hook_providers,
         }
 
@@ -364,7 +364,7 @@ Your goal is to educate and inform about sustainability topics in a way that's a
         agent_kwargs = {
             "name": "general_sustainability_agent",
             "model": "anthropic.claude-opus-4-1-20250805-v1:0",
-            "instructions": general_prompt,
+            "system_prompt": general_prompt,
             "hooks": self.hook_providers,
         }
 
