@@ -342,7 +342,7 @@ Your goal is to educate and inform about sustainability topics in a way that's a
 
         agent_kwargs = {
             "name": "general_sustainability_agent",
-            "model": "us.anthropic.claude-opus-4-20250514-v1:0"",
+            "model": "us.anthropic.claude-opus-4-20250514-v1:0",
             "system_prompt": general_prompt,
             "hooks": self.hook_providers,
         }
