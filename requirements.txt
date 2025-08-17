@@ -11,6 +11,7 @@ bedrock_agentcore_starter_toolkit
 aws-opentelemetry-distro
 opentelemetry-api
 opentelemetry-sdk
+watchtower>=3.0.1
 
 # HTTP server for AgentCore service contract
 aiohttp>=3.8.0
