@@ -351,7 +351,7 @@ Your goal is to educate and inform about sustainability topics in a way that's a
 
         agent_kwargs = {
             "name": "general_sustainability_agent",
-            "model": "anthropic.claude-opus-4-1-20250805-v1:0",
+            "model": "us.anthropic.claude-opus-4-1-20250805-v1:0",
             "system_prompt": general_prompt,
             "hooks": self.hook_providers,
         }
@@ -451,7 +451,7 @@ Current user question: {query}
 Analyze this question and decide which agent should handle it."""
 
             # Run the orchestrator agent with proper message format
-            response = await self.orchestrator(message_content)
+            response = self.orchestrator(message_content)
 
             # Extract the response content
             response_content = (
@@ -520,7 +520,7 @@ User question: {query}
 
 Please provide a detailed response based on the Envision Sustainable Infrastructure Framework."""
 
-            response = await self.knowledge_agent(message_content)
+            response = self.knowledge_agent(message_content)
 
             # Extract response content
             response_content = (
@@ -560,7 +560,7 @@ User question: {query}
 
 Please provide a comprehensive response on this sustainability topic."""
 
-            response = await self.general_sustainability_agent(message_content)
+            response = self.general_sustainability_agent(message_content)
 
             # Extract response content
             response_content = (
