@@ -10,10 +10,10 @@ Run with: opentelemetry-instrument python runtime_agent_main.py
 import asyncio
 import logging
 import os
-from datetime import datetime
 
 import boto3
 from aiohttp import web, web_request
+from watchtower import CloudWatchLogHandler
 
 from custom_agent import CustomEnvisionAgent
 
@@ -23,6 +23,7 @@ multi_agent_orchestrator_error = None
 
 try:
     from multi_agent_orchestrator import EnvisionMultiAgentOrchestrator
+
     MULTI_AGENT_AVAILABLE = True
 except ImportError as e:
     multi_agent_orchestrator_error = str(e)
@@ -50,133 +51,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Configure separate logger for prompts (will go to /bedrockagent/prompt log group)
+# Configure separate logger for prompts to go to a specific CloudWatch log group
 prompt_logger = logging.getLogger("bedrockagent.prompt")
 prompt_logger.setLevel(logging.INFO)
 
-
-class CloudWatchHandler(logging.Handler):
-    """Custom CloudWatch handler for prompt logging"""
-
-    def __init__(self, log_group_name="/bedrockagent/prompt", region="us-east-1"):
-        super().__init__()
-        self.log_group_name = log_group_name
-        self.region = region
-        self.log_stream_name = (
-            f"prompt-stream-{datetime.now().strftime('%Y-%m-%d-%H-%M-%S')}"
-        )
-        self.cloudwatch_client = None
-        self.sequence_token = None
-        self._initialize_cloudwatch()
-
-    def _initialize_cloudwatch(self):
-        """Initialize CloudWatch client and create log group/stream if needed"""
-        try:
-            # Get region from environment or use default
-            region = os.environ.get("AWS_DEFAULT_REGION", self.region)
-            session = boto3.Session()
-            self.cloudwatch_client = session.client("logs", region_name=region)
-
-            # Create log group if it doesn't exist
-            try:
-                self.cloudwatch_client.create_log_group(
-                    logGroupName=self.log_group_name
-                )
-                logger.info(f"✅ Created CloudWatch log group: {self.log_group_name}")
-            except self.cloudwatch_client.exceptions.ResourceAlreadyExistsException:
-                logger.debug(
-                    f"CloudWatch log group already exists: {self.log_group_name}"
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Could not create log group {self.log_group_name}: {str(e)}"
-                )
-
-            # Create log stream
-            try:
-                self.cloudwatch_client.create_log_stream(
-                    logGroupName=self.log_group_name, logStreamName=self.log_stream_name
-                )
-                logger.info(f"✅ Created CloudWatch log stream: {self.log_stream_name}")
-            except self.cloudwatch_client.exceptions.ResourceAlreadyExistsException:
-                logger.debug(
-                    f"CloudWatch log stream already exists: {self.log_stream_name}"
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Could not create log stream {self.log_stream_name}: {str(e)}"
-                )
-
-        except Exception as e:
-            logger.error(f"Failed to initialize CloudWatch logging: {str(e)}")
-            self.cloudwatch_client = None
-
-    def emit(self, record):
-        """Send log record to CloudWatch"""
-        if not self.cloudwatch_client:
-            return
-
-        try:
-            # Format the log message
-            message = self.format(record)
-            timestamp = int(record.created * 1000)  # CloudWatch expects milliseconds
-
-            # Prepare log event
-            log_event = {"timestamp": timestamp, "message": message}
-
-            # Send to CloudWatch
-            kwargs = {
-                "logGroupName": self.log_group_name,
-                "logStreamName": self.log_stream_name,
-                "logEvents": [log_event],
-            }
-
-            if self.sequence_token:
-                kwargs["sequenceToken"] = self.sequence_token
-
-            response = self.cloudwatch_client.put_log_events(**kwargs)
-            self.sequence_token = response.get("nextSequenceToken")
-
-        except self.cloudwatch_client.exceptions.InvalidSequenceTokenException:
-            # Handle sequence token issues by getting the correct token
-            try:
-                streams = self.cloudwatch_client.describe_log_streams(
-                    logGroupName=self.log_group_name,
-                    logStreamNamePrefix=self.log_stream_name,
-                )
-                if streams["logStreams"]:
-                    self.sequence_token = streams["logStreams"][0].get(
-                        "uploadSequenceToken"
-                    )
-                    # Retry with correct token
-                    kwargs["sequenceToken"] = self.sequence_token
-                    response = self.cloudwatch_client.put_log_events(**kwargs)
-                    self.sequence_token = response.get("nextSequenceToken")
-            except Exception as retry_e:
-                logger.error(
-                    f"Failed to retry CloudWatch log after sequence token error: {str(retry_e)}"
-                )
-
-        except Exception as e:
-            logger.error(f"Failed to send log to CloudWatch: {str(e)}")
-
-
-# Create CloudWatch handler for prompt logging if in AWS environment
+# Use watchtower for simplified CloudWatch logging
 try:
-    # Check if we're running in AWS (has AWS credentials)
+    # Check if we're running in an environment with AWS credentials
     session = boto3.Session()
     credentials = session.get_credentials()
 
     if credentials and not prompt_logger.handlers:
-        # Use CloudWatch handler in AWS environment
-        cloudwatch_handler = CloudWatchHandler()
-        cloudwatch_formatter = logging.Formatter(
-            "%(asctime)s - %(levelname)s - %(message)s"
+        # Use watchtower to handle CloudWatch logging
+        # It will automatically create the log group and stream
+        # and handle sequencing tokens.
+        cw_handler = CloudWatchLogHandler(
+            log_group_name="/bedrockagent/prompt",
+            boto3_session=session,
+            create_log_group=True,
         )
-        cloudwatch_handler.setFormatter(cloudwatch_formatter)
-        prompt_logger.addHandler(cloudwatch_handler)
+        cw_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+        cw_handler.setFormatter(cw_formatter)
+        prompt_logger.addHandler(cw_handler)
         prompt_logger.propagate = False
-        logger.info("✅ CloudWatch handler configured for prompt logging")
+        logger.info("✅ Watchtower CloudWatch handler configured for prompt logging")
     else:
         raise Exception("No AWS credentials found")
 
@@ -217,7 +115,9 @@ if AGENTCORE_RUNTIME_AVAILABLE:
 if MULTI_AGENT_AVAILABLE:
     logger.info("✅ Multi-agent orchestrator available")
 else:
-    logger.warning(f"⚠️ Multi-agent orchestrator not available: {multi_agent_orchestrator_error}")
+    logger.warning(
+        f"⚠️ Multi-agent orchestrator not available: {multi_agent_orchestrator_error}"
+    )
     logger.info("Falling back to single agent mode")
 
 
@@ -236,7 +136,9 @@ class AgentCoreRuntime:
         self.region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
         self.knowledge_base_id = os.environ.get("KNOWLEDGE_BASE_ID")
         self.memory_id = os.environ.get("AGENTCORE_MEMORY_ID")
-        self.use_multi_agent = os.environ.get("USE_MULTI_AGENT", "true").lower() == "true"
+        self.use_multi_agent = (
+            os.environ.get("USE_MULTI_AGENT", "true").lower() == "true"
+        )
 
         logger.info(
             f"Runtime configuration: model={self.model_id}, region={self.region}, kb={self.knowledge_base_id}, memory={self.memory_id}, multi_agent={self.use_multi_agent}"
@@ -248,10 +150,14 @@ class AgentCoreRuntime:
             # Initialize multi-agent orchestrator if available and enabled
             if MULTI_AGENT_AVAILABLE and self.use_multi_agent:
                 try:
-                    self.multi_agent_orchestrator = EnvisionMultiAgentOrchestrator(region=self.region)
+                    self.multi_agent_orchestrator = EnvisionMultiAgentOrchestrator(
+                        region=self.region
+                    )
                     logger.info("✅ Multi-agent orchestrator initialized successfully")
                 except Exception as e:
-                    logger.warning(f"Failed to initialize multi-agent orchestrator: {e}")
+                    logger.warning(
+                        f"Failed to initialize multi-agent orchestrator: {e}"
+                    )
                     logger.info("Falling back to single agent mode")
                     self.use_multi_agent = False
 
@@ -271,7 +177,9 @@ class AgentCoreRuntime:
             logger.error(f"Failed to initialize agent: {str(e)}")
             raise
 
-    async def process_query(self, query: str, session_id: str = "default", use_rag: bool = True) -> str:
+    async def process_query(
+        self, query: str, session_id: str = "default", use_rag: bool = True
+    ) -> str:
         """Process a query using multi-agent orchestrator or single agent"""
         try:
             if not self.agent and not self.multi_agent_orchestrator:
@@ -280,7 +188,9 @@ class AgentCoreRuntime:
             # Use multi-agent orchestrator if available
             if self.multi_agent_orchestrator and self.use_multi_agent:
                 logger.info("Processing query through multi-agent orchestrator")
-                response = await self.multi_agent_orchestrator.process_query(query, session_id)
+                response = await self.multi_agent_orchestrator.process_query(
+                    query, session_id
+                )
                 return response
 
             # Fallback to single agent

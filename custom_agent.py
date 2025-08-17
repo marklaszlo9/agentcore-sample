@@ -4,41 +4,90 @@ This preserves the existing logic while implementing proper AgentCore memory man
 Based on: https://github.com/awslabs/amazon-bedrock-agentcore-samples/tree/main/01-tutorials/04-AgentCore-memory
 """
 
+import asyncio
+import functools
 import logging
 import os
 from typing import Any, Optional
 
 import boto3
+from botocore.exceptions import ClientError
 
 logger = logging.getLogger(__name__)
 
-# Try to import AgentCore MemoryClient with multiple possible import paths
-AGENTCORE_AVAILABLE = False
-MemoryClient = None
 
-# Try different possible import paths
-import_attempts = [
-    ("agentcore.memory", "MemoryClient"),
-    ("agentcore", "MemoryClient"),
-    ("amazon_bedrock_agentcore.memory", "MemoryClient"),
-    ("bedrock_agentcore.memory", "MemoryClient"),
-    ("strands_agentcore.memory", "MemoryClient"),
-]
+# --- Simplified AgentCore MemoryClient Import ---
+# Try to import MemoryClient from the most likely locations, with clear logging.
+try:
+    # Primary, recommended import path
+    from bedrock_agentcore_starter_toolkit.memory import MemoryClient
 
-for module_path, class_name in import_attempts:
-    try:
-        module = __import__(module_path, fromlist=[class_name])
-        MemoryClient = getattr(module, class_name)
-        AGENTCORE_AVAILABLE = True
-        logger.info(f"✅ Successfully imported {class_name} from {module_path}")
-        break
-    except (ImportError, AttributeError) as e:
-        logger.debug(f"Failed to import {class_name} from {module_path}: {str(e)}")
-
-if not AGENTCORE_AVAILABLE:
-    logger.warning(
-        "AgentCore MemoryClient not available, will use boto3 bedrock-agentcore fallback"
+    AGENTCORE_AVAILABLE = True
+    logger.info(
+        "✅ Successfully imported MemoryClient from bedrock_agentcore_starter_toolkit"
     )
+except ImportError:
+    try:
+        # Fallback for other possible package structures
+        from bedrock_agentcore.memory import MemoryClient
+
+        AGENTCORE_AVAILABLE = True
+        logger.info("✅ Successfully imported MemoryClient from bedrock_agentcore")
+    except ImportError:
+        MemoryClient = None
+        AGENTCORE_AVAILABLE = False
+        logger.warning(
+            "AgentCore MemoryClient not found. Will use boto3 bedrock-agentcore fallback."
+        )
+
+
+# --- Decorator for AWS Credential Expiration Retry ---
+def aws_retry_on_expiration(max_retries=2):
+    """
+    A decorator to handle AWS credential expiration by refreshing clients and retrying.
+    """
+
+    def decorator(func):
+        @functools.wraps(func)
+        async def wrapper(self, *args, **kwargs):
+            for attempt in range(max_retries + 1):
+                try:
+                    return await func(self, *args, **kwargs)
+                except ClientError as e:
+                    error_code = e.response.get("Error", {}).get("Code", "")
+                    if error_code in [
+                        "ExpiredTokenException",
+                        "InvalidTokenException",
+                        "TokenRefreshRequired",
+                    ]:
+                        logger.warning(
+                            f"AWS credentials expired on attempt {attempt + 1}/{max_retries + 1} "
+                            f"for {func.__name__}: {e}"
+                        )
+                        if attempt < max_retries:
+                            self.refresh_clients()
+                            await asyncio.sleep(1)  # Brief delay before retry
+                        else:
+                            logger.error(
+                                f"Max retries exceeded for credential refresh in {func.__name__}"
+                            )
+                            raise
+                    else:
+                        logger.error(
+                            f"Non-credential ClientError in {func.__name__}: {e}"
+                        )
+                        raise
+                except Exception as e:
+                    logger.error(
+                        f"Unexpected error in {func.__name__} (attempt {attempt + 1}): {e}"
+                    )
+                    if attempt >= max_retries:
+                        raise
+                    await asyncio.sleep(1)
+
+        return wrapper
+
+    return decorator
 
 
 class CustomEnvisionAgent:
@@ -174,7 +223,7 @@ Follow these instructions precisely:
             self._bedrock_agentcore = None
 
     def refresh_clients(self):
-        """Force refresh of AWS clients to handle expired credentials"""
+        """Force refresh of AWS clients to handle expired credentials."""
         logger.info("Refreshing AWS clients due to credential expiration")
         self._bedrock_runtime = None
         self._bedrock_agent_runtime = None
@@ -182,108 +231,32 @@ Follow these instructions precisely:
             self._bedrock_agentcore = None
             self._init_boto3_fallback()
 
-    async def _retrieve_with_retry(
-        self, query: str, max_results: int = 3, max_retries: int = 2
-    ):
-        """Retrieve from knowledge base with retry on credential expiration"""
-        import asyncio
+    @aws_retry_on_expiration()
+    async def _retrieve(self, query: str, max_results: int = 3):
+        """
+        Retrieve from knowledge base. This method is decorated to handle retries.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.bedrock_agent_runtime.retrieve(
+                knowledgeBaseId=self.knowledge_base_id,
+                retrievalQuery={"text": query},
+                retrievalConfiguration={
+                    "vectorSearchConfiguration": {"numberOfResults": max_results}
+                },
+            ),
+        )
 
-        from botocore.exceptions import ClientError
-
-        for attempt in range(max_retries + 1):
-            try:
-                # Use asyncio to run the synchronous boto3 call
-                loop = asyncio.get_event_loop()
-                retrieve_response = await loop.run_in_executor(
-                    None,
-                    lambda: self.bedrock_agent_runtime.retrieve(
-                        knowledgeBaseId=self.knowledge_base_id,
-                        retrievalQuery={"text": query},
-                        retrievalConfiguration={
-                            "vectorSearchConfiguration": {
-                                "numberOfResults": max_results
-                            }
-                        },
-                    ),
-                )
-                return retrieve_response
-
-            except ClientError as e:
-                error_code = e.response.get("Error", {}).get("Code", "")
-                if error_code in [
-                    "ExpiredTokenException",
-                    "InvalidTokenException",
-                    "TokenRefreshRequired",
-                ]:
-                    logger.warning(
-                        f"AWS credentials expired (attempt {attempt + 1}/{max_retries + 1}): {str(e)}"
-                    )
-                    if attempt < max_retries:
-                        self.refresh_clients()
-                        await asyncio.sleep(1)  # Brief delay before retry
-                        continue
-                    else:
-                        logger.error("Max retries exceeded for credential refresh")
-                        raise
-                else:
-                    # Non-credential error, don't retry
-                    logger.error(f"Non-credential error in retrieve: {str(e)}")
-                    raise
-            except Exception as e:
-                logger.error(
-                    f"Unexpected error in retrieve (attempt {attempt + 1}): {str(e)}"
-                )
-                if attempt < max_retries:
-                    await asyncio.sleep(1)
-                    continue
-                else:
-                    raise
-
-    async def _converse_with_retry(self, request_body: dict, max_retries: int = 2):
-        """Call Bedrock converse with retry on credential expiration"""
-        import asyncio
-
-        from botocore.exceptions import ClientError
-
-        for attempt in range(max_retries + 1):
-            try:
-                # Use asyncio to run the synchronous boto3 call
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    None, lambda: self.bedrock_runtime.converse(**request_body)
-                )
-                return response
-
-            except ClientError as e:
-                error_code = e.response.get("Error", {}).get("Code", "")
-                if error_code in [
-                    "ExpiredTokenException",
-                    "InvalidTokenException",
-                    "TokenRefreshRequired",
-                ]:
-                    logger.warning(
-                        f"AWS credentials expired (attempt {attempt + 1}/{max_retries + 1}): {str(e)}"
-                    )
-                    if attempt < max_retries:
-                        self.refresh_clients()
-                        await asyncio.sleep(1)  # Brief delay before retry
-                        continue
-                    else:
-                        logger.error("Max retries exceeded for credential refresh")
-                        raise
-                else:
-                    # Non-credential error, don't retry
-                    logger.error(f"Non-credential error in converse: {str(e)}")
-                    raise
-            except Exception as e:
-                logger.error(
-                    f"Unexpected error in converse (attempt {attempt + 1}): {str(e)}"
-                )
-                if attempt < max_retries:
-                    await asyncio.sleep(1)
-                    continue
-                else:
-                    raise
+    @aws_retry_on_expiration()
+    async def _converse(self, request_body: dict):
+        """
+        Call Bedrock converse. This method is decorated to handle retries.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, lambda: self.bedrock_runtime.converse(**request_body)
+        )
 
     async def _load_conversation_history(self, k: int = 5) -> str:
         """Load recent conversation history from AgentCore memory"""
@@ -463,7 +436,7 @@ Follow these instructions precisely:
                 f"Retrieving context for query: '{query}' from KB: {self.knowledge_base_id}"
             )
 
-            retrieve_response = await self._retrieve_with_retry(query, max_results)
+            retrieve_response = await self._retrieve(query, max_results)
 
             # Process retrieved data
             contexts = []
@@ -529,7 +502,7 @@ Follow these instructions precisely:
             }
 
             # Call Bedrock without memory
-            response = await self._converse_with_retry(request_body)
+            response = await self._converse(request_body)
 
             # Extract response text
             if "output" in response and "message" in response["output"]:
