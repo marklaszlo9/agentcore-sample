@@ -161,7 +161,6 @@ def call_agentcore_runtime_sync(prompt: str, session_id: str) -> str:
         response = agent_core_client.invoke_agent_runtime(
             agentRuntimeArn=AGENT_ARN,
             traceId=trace_id,
-            sessionId=session_id,
             payload=payload,
         )
         logger.info("AgentCore response received: %s", type(response))
