@@ -140,6 +140,19 @@
         .hidden {
             display: none;
         }
+
+        /* Markdown formatting styles */
+        .message ol, .message ul {
+            margin: 8px 0;
+            padding-left: 20px;
+        }
+        .message li {
+            margin: 4px 0;
+        }
+        .message .bold {
+            font-weight: 600;
+            color: #2c3e50;
+        }
     </style>
 </head>
 
@@ -160,14 +173,11 @@
             <button id="signOutButton" class="auth-button">Sign Out</button>
         </div>
         <div class="chat-messages" id="messages">
-            <div class="message agent">
-                <strong>Agent:</strong> Hi there, I am your AI agent here to help with questions about the Envision
-                Sustainable Infrastructure Framework.
-            </div>
+            <!-- Messages will be loaded dynamically -->
         </div>
         <div class="chat-input">
             <input type="text" id="messageInput" placeholder="Ask a question about Envision..." />
-            <button onclick="sendMessage()" id="sendButton">Send</button>
+            <button id="sendButton">Send</button>
         </div>
     </div>
 
@@ -245,13 +255,16 @@
             }
         }
 
-        function showChatInterface() {
+        async function showChatInterface() {
             document.getElementById('authContainer').classList.add('hidden');
             document.getElementById('chatContainer').classList.remove('hidden');
 
             if (currentUser) {
                 const userInfo = document.getElementById('userInfo');
                 userInfo.innerHTML = `Signed in as: ${currentUser.profile.email || currentUser.profile.sub}`;
+                
+                // Load conversation history when showing chat interface
+                await loadConversationHistory();
             }
         }
 
@@ -302,11 +315,6 @@
         }
 
         async function callLambdaProxy(message) {
-            if (!message) {
-                console.error("callLambdaProxy was called with an empty or null message.");
-                return "Cannot send an empty message.";
-            }
-
             const accessToken = await getAccessToken();
             const headers = {
                 'Content-Type': 'application/json',
@@ -331,6 +339,121 @@
 
             const data = await response.json();
             return data.response || data.error || 'No response received';
+        }
+
+        async function loadConversationHistory() {
+            try {
+                console.log('Loading conversation history for session:', sessionId);
+                
+                // For history requests, try runtime service first (if available), then Lambda
+                let apiUrl = 'http://localhost:8080/invocations'; // Direct AgentCore Runtime service URL
+                let useRuntimeService = true;
+                let headers = {
+                    'Content-Type': 'application/json',
+                };
+                
+                // Check if runtime service is available
+                try {
+                    const healthCheck = await fetch('http://localhost:8080/health', { 
+                        method: 'GET',
+                        signal: AbortSignal.timeout(2000) // 2 second timeout
+                    });
+                    if (!healthCheck.ok) {
+                        throw new Error('Runtime service not healthy');
+                    }
+                    console.log('Runtime service is available, using direct connection');
+                } catch (e) {
+                    console.log('Runtime service not available, falling back to Lambda:', e.message);
+                    apiUrl = LAMBDA_API_URL;
+                    useRuntimeService = false;
+                    
+                    // Add auth headers for Lambda
+                    const accessToken = await getAccessToken();
+                    if (accessToken) {
+                        headers['Authorization'] = `Bearer ${accessToken}`;
+                    }
+                }
+                
+                console.log('Making history request to:', apiUrl);
+                
+                const requestBody = {
+                    action: 'getHistory',
+                    sessionId: sessionId,
+                    k: 3  // Get last 3 messages
+                };
+                console.log('Request body:', JSON.stringify(requestBody));
+                
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify(requestBody)
+                });
+
+                console.log('Response status:', response.status);
+                console.log('Response headers:', Object.fromEntries(response.headers.entries()));
+
+                if (!response.ok) {
+                    console.log('History request failed with status:', response.status);
+                    const errorText = await response.text();
+                    console.log('Error response:', errorText);
+                    showWelcomeMessage();
+                    return;
+                }
+
+                // Parse response based on service type
+                let data;
+                const contentType = response.headers.get('content-type') || '';
+                console.log('Response content type:', contentType);
+                
+                if (contentType.includes('application/json')) {
+                    data = await response.json();
+                    console.log('History response data (JSON):', data);
+                } else {
+                    // Handle text response (might be from Lambda or runtime service)
+                    const textResponse = await response.text();
+                    console.log('History response data (text):', textResponse);
+                    
+                    try {
+                        data = JSON.parse(textResponse);
+                    } catch (e) {
+                        console.log('Could not parse text response as JSON, treating as empty history');
+                        data = { messages: [] };
+                    }
+                }
+                
+                const messages = data.messages || [];
+                console.log('Extracted messages:', messages);
+                
+                if (messages.length > 0) {
+                    console.log(`Loading ${messages.length} previous messages`);
+                    
+                    // Add the historical messages
+                    messages.forEach((msg, index) => {
+                        console.log(`Adding message ${index + 1}:`, msg);
+                        addMessage(msg.role, msg.content);
+                    });
+                    
+                    console.log('Conversation history loaded successfully');
+                } else {
+                    console.log('No previous conversation history found - showing welcome message');
+                    showWelcomeMessage();
+                }
+
+            } catch (error) {
+                console.error('Error loading conversation history:', error);
+                console.log('Showing welcome message due to error');
+                // Show welcome message if history loading fails
+                showWelcomeMessage();
+            }
+        }
+
+        function showWelcomeMessage() {
+            // Only show welcome message if no messages are already displayed
+            const messagesContainer = document.getElementById('messages');
+            if (messagesContainer.children.length === 0) {
+                addMessage('agent', "Hi! I'm here to help with **Envision framework** questions. You can ask about:\n\n1. Quality of Life credits\n2. Natural World credits\n3. Resource Allocation credits\n4. Climate and Resilience credits\n5. Community credits");
+                console.log('Showing default welcome message');
+            }
         }
 
         async function callAgentCoreDirect(message) {
@@ -375,6 +498,75 @@
             }
         }
 
+        function formatMarkdown(text) {
+            // Convert **bold** to <span class="bold">bold</span>
+            text = text.replace(/\*\*(.*?)\*\*/g, '<span class="bold">$1</span>');
+            
+            // Convert numbered lists (1. item) to proper HTML lists
+            const lines = text.split('\n');
+            let inList = false;
+            let formattedLines = [];
+            
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                
+                // Skip empty lines
+                if (!line) {
+                    continue;
+                }
+                
+                const numberedListMatch = line.match(/^(\d+)\.\s+(.+)/);
+                
+                if (numberedListMatch) {
+                    if (!inList) {
+                        formattedLines.push('<ol>');
+                        inList = true;
+                    }
+                    formattedLines.push(`<li>${numberedListMatch[2]}</li>`);
+                } else {
+                    if (inList) {
+                        formattedLines.push('</ol>');
+                        inList = false;
+                    }
+                    formattedLines.push(line);
+                }
+            }
+            
+            if (inList) {
+                formattedLines.push('</ol>');
+            }
+            
+            // Join with proper spacing - no <br> inside lists
+            let result = '';
+            let inListTag = false;
+            
+            for (let i = 0; i < formattedLines.length; i++) {
+                const line = formattedLines[i];
+                
+                if (line === '<ol>') {
+                    inListTag = true;
+                    result += line;
+                } else if (line === '</ol>') {
+                    inListTag = false;
+                    result += line;
+                    // Add break after list ends if there's more content
+                    if (i < formattedLines.length - 1) {
+                        result += '<br>';
+                    }
+                } else if (line.startsWith('<li>')) {
+                    result += line;
+                } else {
+                    // Regular text line
+                    if (i > 0 && !inListTag) {
+                        result += '<br>';
+                    }
+                    result += line;
+                }
+            }
+            
+            return result;
+        }
+
         function addMessage(sender, content, isError = false, isLoading = false) {
             const messagesContainer = document.getElementById('messages');
             const messageDiv = document.createElement('div');
@@ -385,7 +577,10 @@
             if (isError) messageDiv.className += ' error';
             if (isLoading) messageDiv.className += ' loading';
 
-            messageDiv.innerHTML = `<strong>${sender === 'user' ? 'You' : 'Agent'}:</strong> ${content}`;
+            // Format markdown for agent messages
+            const formattedContent = sender === 'agent' && !isLoading ? formatMarkdown(content) : content;
+            
+            messageDiv.innerHTML = `<strong>${sender === 'user' ? 'You' : 'Agent'}:</strong> ${formattedContent}`;
 
             messagesContainer.appendChild(messageDiv);
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -414,6 +609,7 @@
             // Add event listeners for auth buttons
             const signInButton = document.getElementById('signInButton');
             const signOutButton = document.getElementById('signOutButton');
+            const sendBtn = document.getElementById('sendButton');
             
             if (signInButton) {
                 signInButton.addEventListener('click', handleSignIn);
@@ -421,6 +617,10 @@
             
             if (signOutButton) {
                 signOutButton.addEventListener('click', handleSignOut);
+            }
+            
+            if (sendBtn) {
+                sendBtn.addEventListener('click', sendMessage);
             }
             
             initializeAuth();
