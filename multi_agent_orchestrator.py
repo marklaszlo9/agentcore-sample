@@ -9,57 +9,46 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from strands import Agent
+from strands.hooks import (
+    AgentInitializedEvent,
+    HookProvider,
+    HookRegistry,
+    MessageAddedEvent,
+)
 
-# Try to import Strands hooks with fallbacks
+# Try to import AgentCore components with fallbacks and detailed logging
+logger = logging.getLogger(__name__)
+
 try:
-    from strands.hooks import AgentInitializedEvent, HookProvider, HookRegistry, MessageAddedEvent
-    STRANDS_HOOKS_AVAILABLE = True
-except ImportError:
-    # Create mock classes if strands hooks are not available
-    STRANDS_HOOKS_AVAILABLE = False
-    logger.warning("Strands hooks not available, using mock implementations")
+    logger.debug("Attempting to import MemoryClient from bedrock_agentcore.memory")
+    from bedrock_agentcore.memory import MemoryClient
+except ImportError as e:
+    logger.debug(f"Failed to import from bedrock_agentcore.memory: {e}")
+    # Fallback for different package structure
+    try:
+        logger.debug("Attempting to import MemoryClient from bedrock_agentcore_starter_toolkit.memory")
+        from bedrock_agentcore_starter_toolkit.memory import MemoryClient
+    except ImportError as e2:
+        logger.warning(f"Failed to import MemoryClient from all known paths: {e2}")
+        MemoryClient = None
 
-    class HookProvider:
-        def __init__(self):
-            self.name = "mock_provider"
-
-    class HookRegistry:
-        def __init__(self):
-            self.hooks = []
-
-        def add_hook(self, hook):
-            self.hooks.append(hook)
-
-    class AgentInitializedEvent:
-        pass
-
-    class MessageAddedEvent:
-        pass
-
-# Simple in-memory conversation storage instead of complex AgentCore memory
-class SimpleConversationMemory:
-    def __init__(self):
-        self.conversations = {}
-
-    async def get_messages(self, session_id: str, max_messages: int = 10):
-        return self.conversations.get(session_id, [])[-max_messages:]
-
-    async def add_message(self, session_id: str, role: str, content: str):
-        if session_id not in self.conversations:
-            self.conversations[session_id] = []
-        self.conversations[session_id].append({
-            "role": role,
-            "content": content,
-            "timestamp": asyncio.get_event_loop().time()
-        })
-
-# Use simple memory instead of complex AgentCore components
-MemoryClient = SimpleConversationMemory
-MEMORY_CLIENT_AVAILABLE = True
-
-# For now, we'll use a simple approach instead of BedrockAgentCoreClient
-AGENTCORE_CLIENT_AVAILABLE = False
-BedrockAgentCoreClient = None
+try:
+    logger.debug("Attempting to import BedrockAgentCoreClient from bedrock_agentcore")
+    from bedrock_agentcore import BedrockAgentCoreClient
+except ImportError as e:
+    logger.debug(f"Failed to import from bedrock_agentcore: {e}")
+    # Try alternative imports
+    try:
+        logger.debug("Attempting to import BedrockAgentCoreClient from bedrock_agentcore_starter_toolkit")
+        from bedrock_agentcore_starter_toolkit import BedrockAgentCoreClient
+    except ImportError as e2:
+        logger.debug(f"Failed to import from bedrock_agentcore_starter_toolkit: {e2}")
+        try:
+            logger.debug("Attempting to import BedrockAgentCoreClient from bedrock_agentcore_starter_toolkit.client")
+            from bedrock_agentcore_starter_toolkit.client import BedrockAgentCoreClient
+        except ImportError as e3:
+            logger.warning(f"Failed to import BedrockAgentCoreClient from all known paths: {e3}")
+            BedrockAgentCoreClient = None
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -214,22 +203,46 @@ class EnvisionMultiAgentOrchestrator:
         """Initialize the orchestrator with all agents and AgentCore integration"""
         self.region = region
 
-        # Initialize simple memory client
-        self.memory_client = MemoryClient()
-        self.agentcore_client = None  # Not using complex AgentCore client for now
-
-        # Initialize hook registry and providers
-        self.hook_registry = HookRegistry()
-
-        if STRANDS_HOOKS_AVAILABLE:
-            self.routing_hook_provider = EnvisionRoutingHookProvider()
-            self.knowledge_hook_provider = EnvisionKnowledgeHookProvider()
-
-            # Add hooks to registry (using add_hook instead of register_provider)
-            self.hook_registry.add_hook(self.routing_hook_provider)
-            self.hook_registry.add_hook(self.knowledge_hook_provider)
+        # Initialize AgentCore client and memory with fallbacks
+        if BedrockAgentCoreClient:
+            try:
+                self.agentcore_client = BedrockAgentCoreClient(region=region)
+            except Exception as e:
+                logger.warning(f"Could not initialize BedrockAgentCoreClient: {e}")
+                self.agentcore_client = None
         else:
-            logger.warning("Strands hooks not available, using simplified agent creation")
+            logger.warning("BedrockAgentCoreClient not available")
+            self.agentcore_client = None
+
+        if MemoryClient:
+            try:
+                # First, try to initialize with the region parameter for newer library versions.
+                self.memory_client = MemoryClient(region=region)
+                logger.info("Initialized MemoryClient with region.")
+            except TypeError:
+                # If that fails, it might be an older version that doesn't accept 'region'.
+                logger.warning(
+                    "MemoryClient does not accept 'region' argument. "
+                    "Falling back to default initialization."
+                )
+                try:
+                    self.memory_client = MemoryClient()
+                    logger.info("Initialized MemoryClient without region.")
+                except Exception as e:
+                    logger.error(f"Failed to initialize MemoryClient on fallback: {e}")
+                    self.memory_client = None
+            except Exception as e:
+                logger.error(f"Could not initialize MemoryClient: {e}")
+                self.memory_client = None
+        else:
+            logger.warning("MemoryClient not available")
+            self.memory_client = None
+
+        # Initialize hook providers
+        self.hook_providers = [
+            EnvisionRoutingHookProvider(),
+            EnvisionKnowledgeHookProvider(),
+        ]
 
         # Initialize agents with available components
         self.orchestrator = self._create_orchestrator_agent()
@@ -600,6 +613,20 @@ Please provide a comprehensive response on this sustainability topic.""",
             formatted.append(f"{role.title()}: {content}")
 
         return "\n".join(formatted)
+
+    async def get_history(self, session_id: str, k: int = 5) -> List[Dict[str, Any]]:
+        """Get conversation history from memory."""
+        if not self.memory_client:
+            logger.warning("MemoryClient not available, cannot retrieve history.")
+            return []
+        try:
+            history = await self.memory_client.get_messages(
+                session_id=session_id, max_messages=k
+            )
+            return history
+        except Exception as e:
+            logger.error(f"Failed to retrieve history for session {session_id}: {e}")
+            return []
 
 
 # Example usage and testing
