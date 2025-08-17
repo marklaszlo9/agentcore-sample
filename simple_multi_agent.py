@@ -178,6 +178,23 @@ I'm currently operating in simplified mode. Here's some guidance:
 
 For more detailed responses, please ensure the multi-agent system is properly configured."""
 
+    async def get_recent_messages(self, k: int = 3) -> list:
+        """
+        Get recent conversation messages for history display.
+        Returns messages in the format expected by the frontend.
+        """
+        try:
+            logger.info(f"🔍 Getting recent messages (k={k}) from multi-agent system")
+            
+            # For now, return empty list since we use simple in-memory storage
+            # In a real implementation, this would retrieve from the memory system
+            logger.info("✅ Multi-agent get_recent_messages called (returning empty for now)")
+            return []
+                
+        except Exception as e:
+            logger.error(f"Error getting recent messages from multi-agent: {str(e)}")
+            return []
+
     def get_conversation_history(self, session_id: str, max_messages: int = 10) -> List[Dict[str, Any]]:
         """Get conversation history for a session"""
         return self.memory.get_messages(session_id, max_messages)

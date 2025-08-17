@@ -383,17 +383,45 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
         if action == "getHistory":
             # Handle history request
             try:
-                if not runtime_instance.agent:
+                # Initialize agents if not already done
+                if not runtime_instance.agent and not runtime_instance.multi_agent_orchestrator:
                     await runtime_instance.initialize_agent()
                 
-                # Set session_id for the agent if provided
-                if session_id:
-                    runtime_instance.agent.session_id = session_id
-                    runtime_instance.agent.user_id = session_id
-                    runtime_instance.agent.actor_id = f"envision_agent_{session_id}"
-
                 k = body.get("k", 3)  # Number of messages to retrieve
-                messages = await runtime_instance.agent.get_recent_messages(k)
+                messages = []
+                
+                # Try multi-agent orchestrator first if available
+                if runtime_instance.multi_agent_orchestrator and runtime_instance.use_multi_agent:
+                    logger.info("🔍 Getting history from multi-agent orchestrator...")
+                    messages = await runtime_instance.multi_agent_orchestrator.get_recent_messages(k)
+                
+                # Fall back to single agent if multi-agent didn't return messages
+                if not messages and runtime_instance.agent:
+                    logger.info("🔍 Getting history from single agent...")
+                    # Set session_id for the agent if provided
+                    if session_id:
+                        runtime_instance.agent.session_id = session_id
+                        runtime_instance.agent.user_id = session_id
+                        runtime_instance.agent.actor_id = f"envision_agent_{session_id}"
+                    
+                    messages = await runtime_instance.agent.get_recent_messages(k)
+                
+                # If still no messages and no single agent, initialize one for history
+                if not messages and not runtime_instance.agent:
+                    logger.info("🤖 Initializing single agent for history retrieval...")
+                    runtime_instance.agent = CustomEnvisionAgent(
+                        model_id=runtime_instance.model_id,
+                        region=runtime_instance.region,
+                        knowledge_base_id=runtime_instance.knowledge_base_id,
+                        memory_id=runtime_instance.memory_id,
+                    )
+                    
+                    if session_id:
+                        runtime_instance.agent.session_id = session_id
+                        runtime_instance.agent.user_id = session_id
+                        runtime_instance.agent.actor_id = f"envision_agent_{session_id}"
+                    
+                    messages = await runtime_instance.agent.get_recent_messages(k)
                 
                 logger.info(f"Retrieved {len(messages)} messages for session {session_id}")
                 
