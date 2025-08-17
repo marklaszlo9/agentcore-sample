@@ -308,7 +308,7 @@ Focus on being helpful, accurate, and actionable in your responses. Keep your re
 
         agent_kwargs = {
             "name": "knowledge_agent",
-            "model": us.anthropic.claude-sonnet-4-20250514-v1:0",
+            "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
             "system_prompt": knowledge_prompt,
             "hooks": self.hook_providers,
         }
