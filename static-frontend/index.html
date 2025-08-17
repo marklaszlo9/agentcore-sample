@@ -302,6 +302,11 @@
         }
 
         async function callLambdaProxy(message) {
+            if (!message) {
+                console.error("callLambdaProxy was called with an empty or null message.");
+                return "Cannot send an empty message.";
+            }
+
             const accessToken = await getAccessToken();
             const headers = {
                 'Content-Type': 'application/json',

@@ -172,6 +172,12 @@ class AgentCoreRuntime:
                 )
                 logger.info("✅ Single agent initialized successfully")
 
+            # --- Add explicit logging for final agent mode ---
+            if self.multi_agent_orchestrator and self.use_multi_agent:
+                logger.info("🚀 Agent is running in MULTI-AGENT mode.")
+            else:
+                logger.warning("⚠️ Agent has fallen back to SINGLE-AGENT mode.")
+
             return self.agent
 
         except Exception as e:
@@ -206,6 +212,29 @@ class AgentCoreRuntime:
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}")
             return f"Sorry, an error occurred while processing your request: {str(e)}"
+
+    async def get_session_history(self, session_id: str, k: int = 5) -> list:
+        """Get conversation history for a session."""
+        try:
+            if not self.agent and not self.multi_agent_orchestrator:
+                await self.initialize_agent()
+
+            if self.multi_agent_orchestrator and self.use_multi_agent:
+                # Use the multi-agent orchestrator's history method
+                return await self.multi_agent_orchestrator.get_history(session_id, k)
+            elif self.agent:
+                # Use the single agent's history method
+                # Note: custom_agent.get_memory_content returns a formatted string,
+                # so we might need to adjust if a structured list is preferred.
+                # For now, we wrap it to match the expected list-of-dicts format.
+                history_str = await self.agent.get_memory_content()
+                return [{"role": "system", "content": history_str}]
+            else:
+                logger.warning("No active agent to retrieve history from.")
+                return []
+        except Exception as e:
+            logger.error(f"Error getting session history for {session_id}: {e}")
+            return []
 
     async def health_check(self) -> dict:
         """Perform health check"""
@@ -310,23 +339,32 @@ runtime_instance = None
 
 async def health_endpoint(request: web_request.Request) -> web.Response:
     """
-    Health check endpoint required by AgentCore service contract
-    GET /health - Must return 200 when healthy
+    Health check endpoint required by AgentCore service contract.
+    GET /health - Must return 200 when healthy.
     """
+    cors_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    }
     try:
         if not runtime_instance:
             return web.json_response(
-                {"status": "unhealthy", "error": "Runtime not initialized"}, status=503
+                {"status": "unhealthy", "error": "Runtime not initialized"},
+                status=503,
+                headers=cors_headers,
             )
 
         health_status = await runtime_instance.health_check()
         status_code = 200 if health_status.get("status") == "healthy" else 503
 
-        return web.json_response(health_status, status=status_code)
+        return web.json_response(health_status, status=status_code, headers=cors_headers)
 
     except Exception as e:
-        logger.error(f"Health endpoint error: {str(e)}")
-        return web.json_response({"status": "unhealthy", "error": str(e)}, status=503)
+        logger.error(f"Health endpoint error: {e}")
+        return web.json_response(
+            {"status": "unhealthy", "error": str(e)}, status=503, headers=cors_headers
+        )
 
 
 async def ping_endpoint(request: web_request.Request) -> web.Response:
@@ -339,8 +377,8 @@ async def ping_endpoint(request: web_request.Request) -> web.Response:
 
 async def invocations_endpoint(request: web_request.Request) -> web.Response:
     """
-    Invocations endpoint required by AgentCore service contract
-    POST /invocations - Main endpoint for agent requests
+    Invocations endpoint required by AgentCore service contract.
+    Handles both prompt processing and other actions like history retrieval.
     """
     try:
         if not runtime_instance:
@@ -350,24 +388,32 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
         try:
             body = await request.json()
         except Exception as e:
-            logger.error(f"Failed to parse request body: {str(e)}")
+            logger.error(f"Failed to parse request body: {e}")
             return web.json_response(
                 {"error": "Invalid JSON in request body"}, status=400
             )
 
-        # Extract prompt and session_id from request
-        prompt = None
         session_id = body.get("sessionId", "default")
 
+        # Handle different actions based on request body
+        if body.get("action") == "getHistory":
+            logger.info(f"Handling getHistory action for session: {session_id}")
+            history = await runtime_instance.get_session_history(
+                session_id, k=body.get("k", 5)
+            )
+            return web.json_response({"history": history}, status=200)
+
+        # Default action is to process a prompt
+        prompt = None
         for field in ["prompt", "query", "message", "input", "text"]:
             if field in body:
                 prompt = body[field]
                 break
 
         if not prompt:
-            logger.error(f"No prompt found in request body: {body}")
+            logger.error(f"No prompt or valid action found in request body: {body}")
             return web.json_response(
-                {"error": "No prompt/query found in request"}, status=400
+                {"error": "No prompt or valid action found in request"}, status=400
             )
 
         # Log user query to separate prompt log group
@@ -383,19 +429,17 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
                 f"Query processed successfully, response length: {len(response)} chars"
             )
         except Exception as e:
-            logger.error(f"Error processing query: {str(e)}")
-            prompt_logger.error(f"QUERY_ERROR: {str(e)}")
-            response = (
-                f"Sorry, an error occurred while processing your request: {str(e)}"
-            )
+            logger.error(f"Error processing query: {e}")
+            prompt_logger.error(f"QUERY_ERROR: {e}")
+            response = f"Sorry, an error occurred while processing your request: {e}"
 
         # Return only the response as plain text (no sessionId or timestamp)
         return web.Response(text=response, status=200, content_type="text/plain")
 
     except Exception as e:
-        logger.error(f"Invocations endpoint error: {str(e)}")
+        logger.error(f"Invocations endpoint error: {e}")
         return web.json_response(
-            {"error": f"Internal server error: {str(e)}"}, status=500
+            {"error": f"Internal server error: {e}"}, status=500
         )
 
 

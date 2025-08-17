@@ -614,6 +614,20 @@ Please provide a comprehensive response on this sustainability topic.""",
 
         return "\n".join(formatted)
 
+    async def get_history(self, session_id: str, k: int = 5) -> List[Dict[str, Any]]:
+        """Get conversation history from memory."""
+        if not self.memory_client:
+            logger.warning("MemoryClient not available, cannot retrieve history.")
+            return []
+        try:
+            history = await self.memory_client.get_messages(
+                session_id=session_id, max_messages=k
+            )
+            return history
+        except Exception as e:
+            logger.error(f"Failed to retrieve history for session {session_id}: {e}")
+            return []
+
 
 # Example usage and testing
 async def test_orchestrator():
