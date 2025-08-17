@@ -18,21 +18,21 @@ except ImportError:
     # Create mock classes if strands hooks are not available
     STRANDS_HOOKS_AVAILABLE = False
     logger.warning("Strands hooks not available, using mock implementations")
-    
+
     class HookProvider:
         def __init__(self):
             self.name = "mock_provider"
-    
+
     class HookRegistry:
         def __init__(self):
             self.hooks = []
-        
+
         def add_hook(self, hook):
             self.hooks.append(hook)
-    
+
     class AgentInitializedEvent:
         pass
-    
+
     class MessageAddedEvent:
         pass
 
@@ -40,10 +40,10 @@ except ImportError:
 class SimpleConversationMemory:
     def __init__(self):
         self.conversations = {}
-    
+
     async def get_messages(self, session_id: str, max_messages: int = 10):
         return self.conversations.get(session_id, [])[-max_messages:]
-    
+
     async def add_message(self, session_id: str, role: str, content: str):
         if session_id not in self.conversations:
             self.conversations[session_id] = []
@@ -217,14 +217,14 @@ class EnvisionMultiAgentOrchestrator:
         # Initialize simple memory client
         self.memory_client = MemoryClient()
         self.agentcore_client = None  # Not using complex AgentCore client for now
-        
+
         # Initialize hook registry and providers
         self.hook_registry = HookRegistry()
-        
+
         if STRANDS_HOOKS_AVAILABLE:
             self.routing_hook_provider = EnvisionRoutingHookProvider()
             self.knowledge_hook_provider = EnvisionKnowledgeHookProvider()
-            
+
             # Add hooks to registry (using add_hook instead of register_provider)
             self.hook_registry.add_hook(self.routing_hook_provider)
             self.hook_registry.add_hook(self.knowledge_hook_provider)
@@ -274,7 +274,7 @@ Do not include any other text, explanations, or formatting. Only return the JSON
             "name": "orchestrator",
             "model": "us.amazon.nova-micro-v1:0",
             "instructions": orchestrator_prompt,
-            "hook_registry": self.hook_registry,
+            "hooks": self.hook_providers,
         }
 
         # Add optional components if available
@@ -312,7 +312,7 @@ Focus on being helpful, accurate, and actionable in your responses."""
             "name": "knowledge_agent",
             "model": "anthropic.claude-sonnet-4-20250514-v1:0",
             "instructions": knowledge_prompt,
-            "hook_registry": self.hook_registry,
+            "hooks": self.hook_providers,
         }
 
         # Add optional components if available
@@ -352,7 +352,7 @@ Your goal is to educate and inform about sustainability topics in a way that's a
             "name": "general_sustainability_agent",
             "model": "anthropic.claude-opus-4-1-20250805-v1:0",
             "instructions": general_prompt,
-            "hook_registry": self.hook_registry,
+            "hooks": self.hook_providers,
         }
 
         # Add optional components if available
@@ -503,12 +503,10 @@ Analyze this question and decide which agent should handle it.""",
             }
 
     async def _query_knowledge_agent(
-        self, query: str, session_id: str, reasoning: str
+        self, query: str, session_id: str
     ) -> str:
         """Query the knowledge base agent"""
         try:
-            logger.info(f"Routing to knowledge agent: {reasoning}")
-
             # Get relevant conversation history
             if self.memory_client:
                 try:
@@ -548,12 +546,10 @@ Please provide a detailed response based on the Envision Sustainable Infrastruct
             return f"I apologize, but I encountered an error accessing the Envision knowledge base: {str(e)}"
 
     async def _query_general_agent(
-        self, query: str, session_id: str, reasoning: str
+        self, query: str, session_id: str
     ) -> str:
         """Query the general sustainability agent"""
         try:
-            logger.info(f"Routing to general sustainability agent: {reasoning}")
-
             # Get relevant conversation history
             if self.memory_client:
                 try:
