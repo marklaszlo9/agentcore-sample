@@ -290,12 +290,6 @@ Do not include any other text, explanations, or formatting. Only return the JSON
             "hooks": self.hook_providers,
         }
 
-        # Add optional components if available
-        if self.memory_client:
-            agent_kwargs["memory_client"] = self.memory_client
-        if self.agentcore_client:
-            agent_kwargs["agentcore_client"] = self.agentcore_client
-
         return Agent(**agent_kwargs)
 
     def _create_knowledge_agent(self) -> Agent:
@@ -327,12 +321,6 @@ Focus on being helpful, accurate, and actionable in your responses."""
             "system_prompt": knowledge_prompt,
             "hooks": self.hook_providers,
         }
-
-        # Add optional components if available
-        if self.memory_client:
-            agent_kwargs["memory_client"] = self.memory_client
-        if self.agentcore_client:
-            agent_kwargs["agentcore_client"] = self.agentcore_client
 
         return Agent(**agent_kwargs)
 
@@ -367,12 +355,6 @@ Your goal is to educate and inform about sustainability topics in a way that's a
             "system_prompt": general_prompt,
             "hooks": self.hook_providers,
         }
-
-        # Add optional components if available
-        if self.memory_client:
-            agent_kwargs["memory_client"] = self.memory_client
-        if self.agentcore_client:
-            agent_kwargs["agentcore_client"] = self.agentcore_client
 
         return Agent(**agent_kwargs)
 
@@ -461,18 +443,15 @@ Your goal is to educate and inform about sustainability topics in a way that's a
                 context = "No previous conversation."
 
             # Create a message for the orchestrator
-            message = {
-                "role": "user",
-                "content": f"""Previous conversation context:
+            message_content = f"""Previous conversation context:
 {context}
 
 Current user question: {query}
 
-Analyze this question and decide which agent should handle it.""",
-            }
+Analyze this question and decide which agent should handle it."""
 
             # Run the orchestrator agent with proper message format
-            response = await self.orchestrator.run(message)
+            response = await self.orchestrator(message_content)
 
             # Extract the response content
             response_content = (
@@ -534,17 +513,14 @@ Analyze this question and decide which agent should handle it.""",
                 context = "No previous conversation."
 
             # Create message for the knowledge agent
-            message = {
-                "role": "user",
-                "content": f"""Previous conversation context:
+            message_content = f"""Previous conversation context:
 {context}
 
 User question: {query}
 
-Please provide a detailed response based on the Envision Sustainable Infrastructure Framework.""",
-            }
+Please provide a detailed response based on the Envision Sustainable Infrastructure Framework."""
 
-            response = await self.knowledge_agent.run(message)
+            response = await self.knowledge_agent(message_content)
 
             # Extract response content
             response_content = (
@@ -577,17 +553,14 @@ Please provide a detailed response based on the Envision Sustainable Infrastruct
                 context = "No previous conversation."
 
             # Create message for the general agent
-            message = {
-                "role": "user",
-                "content": f"""Previous conversation context:
+            message_content = f"""Previous conversation context:
 {context}
 
 User question: {query}
 
-Please provide a comprehensive response on this sustainability topic.""",
-            }
+Please provide a comprehensive response on this sustainability topic."""
 
-            response = await self.general_sustainability_agent.run(message)
+            response = await self.general_sustainability_agent(message_content)
 
             # Extract response content
             response_content = (
