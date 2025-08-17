@@ -137,9 +137,14 @@ class AgentCoreRuntime:
         self.region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
         self.knowledge_base_id = os.environ.get("KNOWLEDGE_BASE_ID")
         self.memory_id = os.environ.get("AGENTCORE_MEMORY_ID")
-        self.use_multi_agent = (
-            os.environ.get("USE_MULTI_AGENT", "true").lower() == "true"
-        )
+        # self.use_multi_agent = (
+        #     os.environ.get("USE_MULTI_AGENT", "true").lower() == "true"
+        # )
+        # --- DEBUGGING: Force multi-agent mode to diagnose environment variable issues ---
+        self.use_multi_agent = True
+        logger.warning("DEBUGGING: Forcing use_multi_agent = True")
+        # --- END DEBUGGING ---
+
 
         logger.info(
             f"Runtime configuration: model={self.model_id}, region={self.region}, kb={self.knowledge_base_id}, memory={self.memory_id}, multi_agent={self.use_multi_agent}"
