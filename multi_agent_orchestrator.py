@@ -199,9 +199,13 @@ class EnvisionMultiAgentOrchestrator:
     Multi-agent orchestrator for the Envision Sustainability Framework using Strands with AgentCore
     """
 
-    def __init__(self, region: str = "us-east-1"):
+    def __init__(self, region: str = "us-east-1", memory_id: Optional[str] = None, session_id: Optional[str] = None):
         """Initialize the orchestrator with all agents and AgentCore integration"""
         self.region = region
+        self.memory_id = memory_id
+        self.session_id = session_id
+        self.actor_id = f"envision_orchestrator_{self.session_id}" if self.session_id else "default_actor"
+        self.branch_name = "main"
 
         # Initialize AgentCore client and memory with fallbacks
         if BedrockAgentCoreClient:
@@ -216,23 +220,10 @@ class EnvisionMultiAgentOrchestrator:
 
         if MemoryClient:
             try:
-                # First, try to initialize with the region parameter for newer library versions.
-                self.memory_client = MemoryClient(region=region)
-                logger.info("Initialized MemoryClient with region.")
-            except TypeError:
-                # If that fails, it might be an older version that doesn't accept 'region'.
-                logger.warning(
-                    "MemoryClient does not accept 'region' argument. "
-                    "Falling back to default initialization."
-                )
-                try:
-                    self.memory_client = MemoryClient()
-                    logger.info("Initialized MemoryClient without region.")
-                except Exception as e:
-                    logger.error(f"Failed to initialize MemoryClient on fallback: {e}")
-                    self.memory_client = None
+                self.memory_client = MemoryClient()
+                logger.info("Initialized MemoryClient without region.")
             except Exception as e:
-                logger.error(f"Could not initialize MemoryClient: {e}")
+                logger.error(f"Failed to initialize MemoryClient: {e}")
                 self.memory_client = None
         else:
             logger.warning("MemoryClient not available")
@@ -281,7 +272,7 @@ IMPORTANT: You must respond with ONLY a JSON object in this exact format:
     "query": "The user's question, potentially rephrased for the chosen agent"
 }
 
-Do not include any other text, explanations, or formatting. Only return the JSON object."""
+Do not include any other text, explanations, or formatting. Only return the JSON object. Keep your response concise and under 2000 characters."""
 
         agent_kwargs = {
             "name": "orchestrator",
@@ -313,11 +304,11 @@ When answering questions:
 4. If you're unsure about specific details, acknowledge the limitation
 5. Use clear, professional language suitable for infrastructure professionals
 
-Focus on being helpful, accurate, and actionable in your responses."""
+Focus on being helpful, accurate, and actionable in your responses. Keep your response concise and under 2000 characters."""
 
         agent_kwargs = {
             "name": "knowledge_agent",
-            "model": "us.anthropic.claude-sonnet-4-20250514-v1:0",
+            "model": us.anthropic.claude-sonnet-4-20250514-v1:0",
             "system_prompt": knowledge_prompt,
             "hooks": self.hook_providers,
         }
@@ -347,11 +338,11 @@ When answering questions:
 4. Acknowledge when topics are outside your expertise
 5. Use accessible language while maintaining technical accuracy
 
-Your goal is to educate and inform about sustainability topics in a way that's actionable and relevant to infrastructure and development professionals."""
+Your goal is to educate and inform about sustainability topics in a way that's actionable and relevant to infrastructure and development professionals. Keep your response concise and under 2000 characters."""
 
         agent_kwargs = {
             "name": "general_sustainability_agent",
-            "model": "us.anthropic.claude-opus-4-20250514-v1:0",
+            "model": "us.anthropic.claude-opus-4-20250514-v1:0"",
             "system_prompt": general_prompt,
             "hooks": self.hook_providers,
         }
@@ -407,13 +398,16 @@ Your goal is to educate and inform about sustainability topics in a way that's a
                 )
 
             # Step 3: Store in memory for context
-            if self.memory_client:
+            if self.memory_client and self.memory_id:
                 try:
-                    await self.memory_client.add_message(
-                        session_id=session_id, role="user", content=user_query
-                    )
-                    await self.memory_client.add_message(
-                        session_id=session_id, role="assistant", content=response
+                    await self.memory_client.create_event(
+                        memory_id=self.memory_id,
+                        actor_id=self.actor_id,
+                        session_id=session_id,
+                        messages=[
+                            (user_query, "user"),
+                            (response, "assistant"),
+                        ],
                     )
                 except Exception as e:
                     logger.warning(f"Could not store conversation in memory: {e}")
@@ -430,10 +424,14 @@ Your goal is to educate and inform about sustainability topics in a way that's a
         """Get the orchestrator's decision on which agent to use"""
         try:
             # Get conversation history for context
-            if self.memory_client:
+            if self.memory_client and self.memory_id:
                 try:
-                    history = await self.memory_client.get_messages(
-                        session_id=session_id, max_messages=10
+                    history = await self.memory_client.get_last_k_turns(
+                        memory_id=self.memory_id,
+                        actor_id=self.actor_id,
+                        session_id=session_id,
+                        k=10,
+                        branch_name=self.branch_name,
                     )
                     context = self._format_conversation_history(history)
                 except Exception as e:
@@ -500,10 +498,14 @@ Analyze this question and decide which agent should handle it."""
         """Query the knowledge base agent"""
         try:
             # Get relevant conversation history
-            if self.memory_client:
+            if self.memory_client and self.memory_id:
                 try:
-                    history = await self.memory_client.get_messages(
-                        session_id=session_id, max_messages=6
+                    history = await self.memory_client.get_last_k_turns(
+                        memory_id=self.memory_id,
+                        actor_id=self.actor_id,
+                        session_id=session_id,
+                        k=6,
+                        branch_name=self.branch_name,
                     )
                     context = self._format_conversation_history(history)
                 except Exception as e:
@@ -540,10 +542,14 @@ Please provide a detailed response based on the Envision Sustainable Infrastruct
         """Query the general sustainability agent"""
         try:
             # Get relevant conversation history
-            if self.memory_client:
+            if self.memory_client and self.memory_id:
                 try:
-                    history = await self.memory_client.get_messages(
-                        session_id=session_id, max_messages=6
+                    history = await self.memory_client.get_last_k_turns(
+                        memory_id=self.memory_id,
+                        actor_id=self.actor_id,
+                        session_id=session_id,
+                        k=6,
+                        branch_name=self.branch_name,
                     )
                     context = self._format_conversation_history(history)
                 except Exception as e:
@@ -574,27 +580,32 @@ Please provide a comprehensive response on this sustainability topic."""
             logger.error(f"Error querying general sustainability agent: {e}")
             return f"I apologize, but I encountered an error with the sustainability expert: {str(e)}"
 
-    def _format_conversation_history(self, history: List[Dict[str, Any]]) -> str:
+    def _format_conversation_history(self, history: List[List[Dict[str, Any]]]) -> str:
         """Format conversation history for context"""
         if not history:
             return "No previous conversation."
 
         formatted = []
-        for msg in history[-6:]:  # Last 6 messages for context
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            formatted.append(f"{role.title()}: {content}")
+        for turn in history:
+            for message in turn:
+                role = message.get("role", "unknown").lower()
+                content = message.get("content", {}).get("text", "")
+                formatted.append(f"{role.title()}: {content}")
 
         return "\n".join(formatted)
 
     async def get_history(self, session_id: str, k: int = 5) -> List[Dict[str, Any]]:
         """Get conversation history from memory."""
-        if not self.memory_client:
+        if not self.memory_client or not self.memory_id:
             logger.warning("MemoryClient not available, cannot retrieve history.")
             return []
         try:
-            history = await self.memory_client.get_messages(
-                session_id=session_id, max_messages=k
+            history = await self.memory_client.get_last_k_turns(
+                memory_id=self.memory_id,
+                actor_id=self.actor_id,
+                session_id=session_id,
+                k=k,
+                branch_name=self.branch_name,
             )
             return history
         except Exception as e:
@@ -605,7 +616,10 @@ Please provide a comprehensive response on this sustainability topic."""
 # Example usage and testing
 async def test_orchestrator():
     """Test the multi-agent orchestrator"""
-    orchestrator = EnvisionMultiAgentOrchestrator()
+    import os
+    session_id = "test_session_001"
+    memory_id = os.environ.get("AGENTCORE_MEMORY_ID")
+    orchestrator = EnvisionMultiAgentOrchestrator(memory_id=memory_id, session_id=session_id)
 
     test_queries = [
         "What are the Quality of Life credits in the Envision framework?",
@@ -614,8 +628,6 @@ async def test_orchestrator():
         "What are the latest trends in sustainable infrastructure?",
         "How do I implement the Leadership credits in my project?",
     ]
-
-    session_id = "test_session_001"
 
     for query in test_queries:
         print(f"\n{'='*60}")
