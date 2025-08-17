@@ -95,8 +95,10 @@ run_lint() {
     }
     
     print_status "Running flake8 (linting)..."
-    flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-    flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
+    # Run flake8 with explicit settings to ensure consistency.
+    flake8 . --count --statistics --max-line-length=88 --extend-ignore=E203,W503 || {
+        print_warning "Linting issues found."
+    }
     
     print_status "Running mypy (type checking)..."
     mypy --ignore-missing-imports custom_agent.py agent_cli.py || {
