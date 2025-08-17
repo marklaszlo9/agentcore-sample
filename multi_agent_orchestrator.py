@@ -372,18 +372,33 @@ Your goal is to educate and inform about sustainability topics in a way that's a
                 user_query, session_id
             )
 
-            # Step 2: Route to appropriate agent
-            if orchestrator_response["agent"] == "knowledge":
+            # Step 2: Log the routing decision with model info
+            chosen_agent_name = orchestrator_response.get("agent")
+            reasoning = orchestrator_response.get("reasoning", "No reasoning provided.")
+
+            if chosen_agent_name == "knowledge":
+                chosen_agent_instance = self.knowledge_agent
+            else:
+                # Default to general agent if not knowledge
+                chosen_agent_name = "general"
+                chosen_agent_instance = self.general_sustainability_agent
+
+            logger.info(
+                f"Routing to agent: {chosen_agent_instance.name}, "
+                f"Model: {chosen_agent_instance.model}, "
+                f"Reasoning: {reasoning}"
+            )
+
+            # Step 3: Route to appropriate agent
+            if chosen_agent_name == "knowledge":
                 response = await self._query_knowledge_agent(
                     orchestrator_response["query"],
-                    session_id,
-                    orchestrator_response["reasoning"],
+                    session_id
                 )
             else:
                 response = await self._query_general_agent(
                     orchestrator_response["query"],
-                    session_id,
-                    orchestrator_response["reasoning"],
+                    session_id
                 )
 
             # Step 3: Store in memory for context
