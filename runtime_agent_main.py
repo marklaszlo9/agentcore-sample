@@ -339,23 +339,32 @@ runtime_instance = None
 
 async def health_endpoint(request: web_request.Request) -> web.Response:
     """
-    Health check endpoint required by AgentCore service contract
-    GET /health - Must return 200 when healthy
+    Health check endpoint required by AgentCore service contract.
+    GET /health - Must return 200 when healthy.
     """
+    cors_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    }
     try:
         if not runtime_instance:
             return web.json_response(
-                {"status": "unhealthy", "error": "Runtime not initialized"}, status=503
+                {"status": "unhealthy", "error": "Runtime not initialized"},
+                status=503,
+                headers=cors_headers,
             )
 
         health_status = await runtime_instance.health_check()
         status_code = 200 if health_status.get("status") == "healthy" else 503
 
-        return web.json_response(health_status, status=status_code)
+        return web.json_response(health_status, status=status_code, headers=cors_headers)
 
     except Exception as e:
-        logger.error(f"Health endpoint error: {str(e)}")
-        return web.json_response({"status": "unhealthy", "error": str(e)}, status=503)
+        logger.error(f"Health endpoint error: {e}")
+        return web.json_response(
+            {"status": "unhealthy", "error": str(e)}, status=503, headers=cors_headers
+        )
 
 
 async def ping_endpoint(request: web_request.Request) -> web.Response:
