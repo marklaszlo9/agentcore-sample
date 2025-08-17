@@ -16,26 +16,38 @@ from strands.hooks import (
     MessageAddedEvent,
 )
 
-# Try to import AgentCore components with fallbacks
+# Try to import AgentCore components with fallbacks and detailed logging
+logger = logging.getLogger(__name__)
+
 try:
+    logger.debug("Attempting to import MemoryClient from bedrock_agentcore.memory")
     from bedrock_agentcore.memory import MemoryClient
-except ImportError:
+except ImportError as e:
+    logger.debug(f"Failed to import from bedrock_agentcore.memory: {e}")
     # Fallback for different package structure
     try:
+        logger.debug("Attempting to import MemoryClient from bedrock_agentcore_starter_toolkit.memory")
         from bedrock_agentcore_starter_toolkit.memory import MemoryClient
-    except ImportError:
+    except ImportError as e2:
+        logger.warning(f"Failed to import MemoryClient from all known paths: {e2}")
         MemoryClient = None
 
 try:
+    logger.debug("Attempting to import BedrockAgentCoreClient from bedrock_agentcore")
     from bedrock_agentcore import BedrockAgentCoreClient
-except ImportError:
+except ImportError as e:
+    logger.debug(f"Failed to import from bedrock_agentcore: {e}")
     # Try alternative imports
     try:
+        logger.debug("Attempting to import BedrockAgentCoreClient from bedrock_agentcore_starter_toolkit")
         from bedrock_agentcore_starter_toolkit import BedrockAgentCoreClient
-    except ImportError:
+    except ImportError as e2:
+        logger.debug(f"Failed to import from bedrock_agentcore_starter_toolkit: {e2}")
         try:
+            logger.debug("Attempting to import BedrockAgentCoreClient from bedrock_agentcore_starter_toolkit.client")
             from bedrock_agentcore_starter_toolkit.client import BedrockAgentCoreClient
-        except ImportError:
+        except ImportError as e3:
+            logger.warning(f"Failed to import BedrockAgentCoreClient from all known paths: {e3}")
             BedrockAgentCoreClient = None
 
 # Configure logging
@@ -204,22 +216,33 @@ class EnvisionMultiAgentOrchestrator:
 
         if MemoryClient:
             try:
+                # First, try to initialize with the region parameter for newer library versions.
                 self.memory_client = MemoryClient(region=region)
+                logger.info("Initialized MemoryClient with region.")
+            except TypeError:
+                # If that fails, it might be an older version that doesn't accept 'region'.
+                logger.warning(
+                    "MemoryClient does not accept 'region' argument. "
+                    "Falling back to default initialization."
+                )
+                try:
+                    self.memory_client = MemoryClient()
+                    logger.info("Initialized MemoryClient without region.")
+                except Exception as e:
+                    logger.error(f"Failed to initialize MemoryClient on fallback: {e}")
+                    self.memory_client = None
             except Exception as e:
-                logger.warning(f"Could not initialize MemoryClient: {e}")
+                logger.error(f"Could not initialize MemoryClient: {e}")
                 self.memory_client = None
         else:
             logger.warning("MemoryClient not available")
             self.memory_client = None
 
-        # Initialize hook registry and providers
-        self.hook_registry = HookRegistry()
-        self.routing_hook_provider = EnvisionRoutingHookProvider()
-        self.knowledge_hook_provider = EnvisionKnowledgeHookProvider()
-
-        # Register hook providers
-        self.hook_registry.register_provider(self.routing_hook_provider)
-        self.hook_registry.register_provider(self.knowledge_hook_provider)
+        # Initialize hook providers
+        self.hook_providers = [
+            EnvisionRoutingHookProvider(),
+            EnvisionKnowledgeHookProvider(),
+        ]
 
         # Initialize agents with available components
         self.orchestrator = self._create_orchestrator_agent()
@@ -264,7 +287,7 @@ Do not include any other text, explanations, or formatting. Only return the JSON
             "name": "orchestrator",
             "model": "us.amazon.nova-micro-v1:0",
             "instructions": orchestrator_prompt,
-            "hook_registry": self.hook_registry,
+            "hooks": self.hook_providers,
         }
 
         # Add optional components if available
@@ -302,7 +325,7 @@ Focus on being helpful, accurate, and actionable in your responses."""
             "name": "knowledge_agent",
             "model": "anthropic.claude-sonnet-4-20250514-v1:0",
             "instructions": knowledge_prompt,
-            "hook_registry": self.hook_registry,
+            "hooks": self.hook_providers,
         }
 
         # Add optional components if available
@@ -342,7 +365,7 @@ Your goal is to educate and inform about sustainability topics in a way that's a
             "name": "general_sustainability_agent",
             "model": "anthropic.claude-opus-4-1-20250805-v1:0",
             "instructions": general_prompt,
-            "hook_registry": self.hook_registry,
+            "hooks": self.hook_providers,
         }
 
         # Add optional components if available
@@ -372,18 +395,33 @@ Your goal is to educate and inform about sustainability topics in a way that's a
                 user_query, session_id
             )
 
-            # Step 2: Route to appropriate agent
-            if orchestrator_response["agent"] == "knowledge":
+            # Step 2: Log the routing decision with model info
+            chosen_agent_name = orchestrator_response.get("agent")
+            reasoning = orchestrator_response.get("reasoning", "No reasoning provided.")
+
+            if chosen_agent_name == "knowledge":
+                chosen_agent_instance = self.knowledge_agent
+            else:
+                # Default to general agent if not knowledge
+                chosen_agent_name = "general"
+                chosen_agent_instance = self.general_sustainability_agent
+
+            logger.info(
+                f"Routing to agent: {chosen_agent_instance.name}, "
+                f"Model: {chosen_agent_instance.model}, "
+                f"Reasoning: {reasoning}"
+            )
+
+            # Step 3: Route to appropriate agent
+            if chosen_agent_name == "knowledge":
                 response = await self._query_knowledge_agent(
                     orchestrator_response["query"],
-                    session_id,
-                    orchestrator_response["reasoning"],
+                    session_id
                 )
             else:
                 response = await self._query_general_agent(
                     orchestrator_response["query"],
-                    session_id,
-                    orchestrator_response["reasoning"],
+                    session_id
                 )
 
             # Step 3: Store in memory for context
@@ -478,12 +516,10 @@ Analyze this question and decide which agent should handle it.""",
             }
 
     async def _query_knowledge_agent(
-        self, query: str, session_id: str, reasoning: str
+        self, query: str, session_id: str
     ) -> str:
         """Query the knowledge base agent"""
         try:
-            logger.info(f"Routing to knowledge agent: {reasoning}")
-
             # Get relevant conversation history
             if self.memory_client:
                 try:
@@ -523,12 +559,10 @@ Please provide a detailed response based on the Envision Sustainable Infrastruct
             return f"I apologize, but I encountered an error accessing the Envision knowledge base: {str(e)}"
 
     async def _query_general_agent(
-        self, query: str, session_id: str, reasoning: str
+        self, query: str, session_id: str
     ) -> str:
         """Query the general sustainability agent"""
         try:
-            logger.info(f"Routing to general sustainability agent: {reasoning}")
-
             # Get relevant conversation history
             if self.memory_client:
                 try:

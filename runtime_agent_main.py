@@ -62,12 +62,13 @@ try:
     credentials = session.get_credentials()
 
     if credentials and not prompt_logger.handlers:
-        # Use watchtower to handle CloudWatch logging
-        # It will automatically create the log group and stream
-        # and handle sequencing tokens.
+        # Use watchtower to handle CloudWatch logging.
+        # It will automatically create the log group and stream and handle sequencing tokens.
+        # The 'boto3_client' argument is used to pass a pre-configured client.
+        logs_client = session.client("logs", region_name=session.region_name)
         cw_handler = CloudWatchLogHandler(
             log_group_name="/bedrockagent/prompt",
-            boto3_session=session,
+            boto3_client=logs_client,
             create_log_group=True,
         )
         cw_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")

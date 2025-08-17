@@ -31,19 +31,25 @@ Conditions:
   HasCertificate: !Not [!Equals [!Ref CertificateArn, '']]
 
 Resources:
+  # CloudFront Origin Access Identity (OAI)
+  # This creates a special identity for CloudFront to access the S3 bucket securely.
+  OriginAccessIdentity:
+    Type: AWS::CloudFront::CloudFrontOriginAccessIdentity
+    Properties:
+      CloudFrontOriginAccessIdentityConfig:
+        Comment: !Sub 'OAI for ${AWS::StackName} frontend'
+
   # S3 Bucket for Frontend
   FrontendBucket:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub '${AWS::StackName}-frontend-${AWS::AccountId}'
+      # Enable Public Access Block - The bucket should NOT be public.
       PublicAccessBlockConfiguration:
-        BlockPublicAcls: false
-        BlockPublicPolicy: false
-        IgnorePublicAcls: false
-        RestrictPublicBuckets: false
-      WebsiteConfiguration:
-        IndexDocument: index.html
-        ErrorDocument: index.html
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
       CorsConfiguration:
         CorsRules:
           - AllowedHeaders: ['*']
@@ -52,15 +58,17 @@ Resources:
             MaxAge: 3600
 
   # S3 Bucket Policy
+  # This policy grants read access ONLY to the CloudFront Origin Access Identity.
   FrontendBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
       Bucket: !Ref FrontendBucket
       PolicyDocument:
         Statement:
-          - Sid: PublicReadGetObject
+          - Sid: GrantCloudFrontOriginAccess
             Effect: Allow
-            Principal: '*'
+            Principal:
+              CanonicalUser: !GetAtt OriginAccessIdentity.S3CanonicalUserId
             Action: s3:GetObject
             Resource: !Sub "arn:aws:s3:::${FrontendBucket}/*"
 
@@ -256,12 +264,11 @@ Resources:
     Properties:
       DistributionConfig:
         Origins:
-          - DomainName: !GetAtt FrontendBucket.DomainName
+          # The origin is now configured as a private S3 origin, not a public website.
+          - DomainName: !GetAtt FrontendBucket.RegionalDomainName
             Id: S3Origin
-            CustomOriginConfig:
-              HTTPPort: 80
-              HTTPSPort: 443
-              OriginProtocolPolicy: http-only
+            S3OriginConfig:
+              OriginAccessIdentity: !Sub 'origin-access-identity/cloudfront/${OriginAccessIdentity}'
         Enabled: true
         DefaultRootObject: index.html
         CustomErrorResponses:
