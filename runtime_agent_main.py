@@ -147,22 +147,34 @@ class AgentCoreRuntime:
     async def initialize_agent(self) -> CustomEnvisionAgent:
         """Initialize the custom agent and/or multi-agent orchestrator"""
         try:
+            logger.info("🚀 Starting agent initialization...")
+            logger.info(f"Multi-agent available: {MULTI_AGENT_AVAILABLE}")
+            logger.info(f"Multi-agent enabled: {self.use_multi_agent}")
+            
             # Initialize multi-agent orchestrator if available and enabled
             if MULTI_AGENT_AVAILABLE and self.use_multi_agent:
+                logger.info("🤖 Attempting to initialize multi-agent orchestrator...")
                 try:
                     self.multi_agent_orchestrator = EnvisionMultiAgentOrchestrator(
                         region=self.region
                     )
                     logger.info("✅ Multi-agent orchestrator initialized successfully")
+                    logger.info("🎯 System will use MULTI-AGENT mode")
                 except Exception as e:
                     logger.warning(
-                        f"Failed to initialize multi-agent orchestrator: {e}"
+                        f"❌ Failed to initialize multi-agent orchestrator: {e}"
                     )
-                    logger.info("Falling back to single agent mode")
+                    logger.info("⚠️ Falling back to single agent mode")
                     self.use_multi_agent = False
+            else:
+                if not MULTI_AGENT_AVAILABLE:
+                    logger.info("⚠️ Multi-agent not available - missing dependencies")
+                if not self.use_multi_agent:
+                    logger.info("⚠️ Multi-agent disabled via USE_MULTI_AGENT=false")
 
             # Initialize single agent as fallback or primary
             if not self.use_multi_agent or not self.multi_agent_orchestrator:
+                logger.info("🤖 Initializing single agent...")
                 self.agent = CustomEnvisionAgent(
                     model_id=self.model_id,
                     region=self.region,
@@ -170,6 +182,7 @@ class AgentCoreRuntime:
                     memory_id=self.memory_id,
                 )
                 logger.info("✅ Single agent initialized successfully")
+                logger.info("🎯 System will use SINGLE-AGENT mode")
 
             return self.agent
 
@@ -185,16 +198,25 @@ class AgentCoreRuntime:
             if not self.agent and not self.multi_agent_orchestrator:
                 await self.initialize_agent()
 
+            # Set session information on agent if available
+            if self.agent and session_id != "default":
+                self.agent.session_id = session_id
+                self.agent.user_id = session_id
+                self.agent.actor_id = f"envision_agent_{session_id}"
+
             # Use multi-agent orchestrator if available
             if self.multi_agent_orchestrator and self.use_multi_agent:
-                logger.info("Processing query through multi-agent orchestrator")
+                logger.info("🤖 Processing query through MULTI-AGENT orchestrator")
+                logger.info(f"Session: {session_id}, Query: {query[:100]}...")
                 response = await self.multi_agent_orchestrator.process_query(
                     query, session_id
                 )
+                logger.info(f"Multi-agent response: {len(response)} chars")
                 return response
 
             # Fallback to single agent
-            logger.info("Processing query through single agent")
+            logger.info("🤖 Processing query through SINGLE AGENT")
+            logger.info(f"Session: {session_id}, Query: {query[:100]}...")
             if use_rag and self.knowledge_base_id:
                 response = await self.agent.query_with_rag(query)
             else:
@@ -354,20 +376,60 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
                 {"error": "Invalid JSON in request body"}, status=400
             )
 
-        # Extract prompt and session_id from request
-        prompt = None
+        # Check if this is a history request
+        action = body.get("action", "query")
         session_id = body.get("sessionId", "default")
 
-        for field in ["prompt", "query", "message", "input", "text"]:
-            if field in body:
-                prompt = body[field]
-                break
+        if action == "getHistory":
+            # Handle history request
+            try:
+                if not runtime_instance.agent:
+                    await runtime_instance.initialize_agent()
+                
+                # Set session_id for the agent if provided
+                if session_id:
+                    runtime_instance.agent.session_id = session_id
+                    runtime_instance.agent.user_id = session_id
+                    runtime_instance.agent.actor_id = f"envision_agent_{session_id}"
 
-        if not prompt:
-            logger.error(f"No prompt found in request body: {body}")
-            return web.json_response(
-                {"error": "No prompt/query found in request"}, status=400
-            )
+                k = body.get("k", 3)  # Number of messages to retrieve
+                messages = await runtime_instance.agent.get_recent_messages(k)
+                
+                logger.info(f"Retrieved {len(messages)} messages for session {session_id}")
+                
+                return web.json_response({
+                    "messages": messages,
+                    "sessionId": session_id
+                }, status=200)
+
+            except Exception as e:
+                logger.error(f"Error retrieving history: {str(e)}")
+                return web.json_response({
+                    "messages": [],
+                    "error": f"Could not retrieve history: {str(e)}"
+                }, status=200)  # Return 200 with empty messages rather than error
+
+        else:
+            # Handle regular query request
+            # Extract prompt from request (try different field names)
+            prompt = None
+
+            for field in ["prompt", "query", "message", "input", "text"]:
+                if field in body:
+                    prompt = body[field]
+                    break
+
+            if not prompt:
+                logger.error(f"No prompt found in request body: {body}")
+                return web.json_response(
+                    {"error": "No prompt/query found in request"}, status=400
+                )
+
+            # Set session_id for the agent if provided
+            if session_id and runtime_instance.agent:
+                runtime_instance.agent.session_id = session_id
+                runtime_instance.agent.user_id = session_id
+                runtime_instance.agent.actor_id = f"envision_agent_{session_id}"
 
         # Log user query to separate prompt log group
         prompt_logger.info(f"USER_QUERY: {prompt}")

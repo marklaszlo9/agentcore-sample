@@ -9,34 +9,57 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from strands import Agent
-from strands.hooks import (
-    AgentInitializedEvent,
-    HookProvider,
-    HookRegistry,
-    MessageAddedEvent,
-)
 
-# Try to import AgentCore components with fallbacks
+# Try to import Strands hooks with fallbacks
 try:
-    from bedrock_agentcore.memory import MemoryClient
+    from strands.hooks import AgentInitializedEvent, HookProvider, HookRegistry, MessageAddedEvent
+    STRANDS_HOOKS_AVAILABLE = True
 except ImportError:
-    # Fallback for different package structure
-    try:
-        from bedrock_agentcore_starter_toolkit.memory import MemoryClient
-    except ImportError:
-        MemoryClient = None
+    # Create mock classes if strands hooks are not available
+    STRANDS_HOOKS_AVAILABLE = False
+    logger.warning("Strands hooks not available, using mock implementations")
+    
+    class HookProvider:
+        def __init__(self):
+            self.name = "mock_provider"
+    
+    class HookRegistry:
+        def __init__(self):
+            self.hooks = []
+        
+        def add_hook(self, hook):
+            self.hooks.append(hook)
+    
+    class AgentInitializedEvent:
+        pass
+    
+    class MessageAddedEvent:
+        pass
 
-try:
-    from bedrock_agentcore import BedrockAgentCoreClient
-except ImportError:
-    # Try alternative imports
-    try:
-        from bedrock_agentcore_starter_toolkit import BedrockAgentCoreClient
-    except ImportError:
-        try:
-            from bedrock_agentcore_starter_toolkit.client import BedrockAgentCoreClient
-        except ImportError:
-            BedrockAgentCoreClient = None
+# Simple in-memory conversation storage instead of complex AgentCore memory
+class SimpleConversationMemory:
+    def __init__(self):
+        self.conversations = {}
+    
+    async def get_messages(self, session_id: str, max_messages: int = 10):
+        return self.conversations.get(session_id, [])[-max_messages:]
+    
+    async def add_message(self, session_id: str, role: str, content: str):
+        if session_id not in self.conversations:
+            self.conversations[session_id] = []
+        self.conversations[session_id].append({
+            "role": role,
+            "content": content,
+            "timestamp": asyncio.get_event_loop().time()
+        })
+
+# Use simple memory instead of complex AgentCore components
+MemoryClient = SimpleConversationMemory
+MEMORY_CLIENT_AVAILABLE = True
+
+# For now, we'll use a simple approach instead of BedrockAgentCoreClient
+AGENTCORE_CLIENT_AVAILABLE = False
+BedrockAgentCoreClient = None
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -191,35 +214,22 @@ class EnvisionMultiAgentOrchestrator:
         """Initialize the orchestrator with all agents and AgentCore integration"""
         self.region = region
 
-        # Initialize AgentCore client and memory with fallbacks
-        if BedrockAgentCoreClient:
-            try:
-                self.agentcore_client = BedrockAgentCoreClient(region=region)
-            except Exception as e:
-                logger.warning(f"Could not initialize BedrockAgentCoreClient: {e}")
-                self.agentcore_client = None
-        else:
-            logger.warning("BedrockAgentCoreClient not available")
-            self.agentcore_client = None
-
-        if MemoryClient:
-            try:
-                self.memory_client = MemoryClient(region=region)
-            except Exception as e:
-                logger.warning(f"Could not initialize MemoryClient: {e}")
-                self.memory_client = None
-        else:
-            logger.warning("MemoryClient not available")
-            self.memory_client = None
-
+        # Initialize simple memory client
+        self.memory_client = MemoryClient()
+        self.agentcore_client = None  # Not using complex AgentCore client for now
+        
         # Initialize hook registry and providers
         self.hook_registry = HookRegistry()
-        self.routing_hook_provider = EnvisionRoutingHookProvider()
-        self.knowledge_hook_provider = EnvisionKnowledgeHookProvider()
-
-        # Register hook providers
-        self.hook_registry.register_provider(self.routing_hook_provider)
-        self.hook_registry.register_provider(self.knowledge_hook_provider)
+        
+        if STRANDS_HOOKS_AVAILABLE:
+            self.routing_hook_provider = EnvisionRoutingHookProvider()
+            self.knowledge_hook_provider = EnvisionKnowledgeHookProvider()
+            
+            # Add hooks to registry (using add_hook instead of register_provider)
+            self.hook_registry.add_hook(self.routing_hook_provider)
+            self.hook_registry.add_hook(self.knowledge_hook_provider)
+        else:
+            logger.warning("Strands hooks not available, using simplified agent creation")
 
         # Initialize agents with available components
         self.orchestrator = self._create_orchestrator_agent()
