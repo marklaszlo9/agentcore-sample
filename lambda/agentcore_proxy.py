@@ -25,11 +25,9 @@ AGENT_ARN = os.environ.get(
 )
 AGENTCORE_MEMORY_ID = os.environ.get("AGENTCORE_MEMORY_ID")
 
-# Initialize Boto3 clients
-# Note: The service name for Bedrock Agent Runtime is 'bedrock-agent-runtime'
-# The service name for AgentCore (memory, etc.) is 'bedrock-agentcore'
-bedrock_agent_runtime_client = boto3.client("bedrock-agent-runtime")
-bedrock_agentcore_client = boto3.client("bedrock-agentcore")
+# Initialize the Bedrock AgentCore client
+# This client is used for both invoking the agent runtime and memory operations.
+agentcore_client = boto3.client("bedrock-agentcore")
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -179,7 +177,7 @@ def call_agentcore_runtime_sync(prompt: str, session_id: str) -> str:
 
         # Invoke the Bedrock Agent Runtime service
         logger.info("Invoking Bedrock Agent Runtime service with traceId: %s", trace_id)
-        response = bedrock_agent_runtime_client.invoke_agent_runtime(
+        response = agentcore_client.invoke_agent_runtime(
             agentRuntimeArn=AGENT_ARN,
             traceId=trace_id,
             payload=payload,
@@ -299,7 +297,7 @@ async def get_conversation_history(session_id: str, k: int = 5) -> list:
         with ThreadPoolExecutor() as executor:
             response = await loop.run_in_executor(
                 executor,
-                lambda: bedrock_agentcore_client.get_memory(
+                lambda: agentcore_client.get_memory(
                     memoryId=AGENTCORE_MEMORY_ID,
                     # Note: The boto3 get_memory call does not currently use sessionId
                     # or other fine-grained filters like the MemoryClient does.
@@ -361,7 +359,7 @@ async def store_conversation_turn(session_id: str, user_message: str, assistant_
         with ThreadPoolExecutor() as executor:
             await loop.run_in_executor(
                 executor,
-                lambda: bedrock_agentcore_client.update_memory(
+                lambda: agentcore_client.update_memory(
                     memoryId=AGENTCORE_MEMORY_ID,
                     memoryContents=memory_contents,
                 ),

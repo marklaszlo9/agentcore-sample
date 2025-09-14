@@ -55,7 +55,7 @@ class TestLambdaFunction:
         assert "Access-Control-Allow-Methods" in response["headers"]
         assert "Access-Control-Allow-Headers" in response["headers"]
 
-    @patch("agentcore_proxy.bedrock_agent_runtime_client")
+    @patch("agentcore_proxy.agentcore_client")
     def test_successful_post_request(self, mock_client):
         """Test successful POST request with AgentCore response"""
         mock_client.invoke_agent_runtime.return_value = self.mock_agent_response
@@ -85,7 +85,7 @@ class TestLambdaFunction:
         assert body["sessionId"] == "test-session-123"
 
     @patch("agentcore_proxy.AGENTCORE_MEMORY_ID", "test-memory-id")
-    @patch("agentcore_proxy.bedrock_agentcore_client")
+    @patch("agentcore_proxy.agentcore_client")
     def test_get_history_request(self, mock_client):
         """Test successful getHistory action"""
         # Mock the get_memory response
@@ -120,10 +120,10 @@ class TestLambdaFunction:
         assert body["messages"][1]["content"] == "Hi there!"
 
     @patch("agentcore_proxy.store_conversation_turn")
-    @patch("agentcore_proxy.bedrock_agent_runtime_client")
-    def test_store_conversation_is_called(self, mock_runtime_client, mock_store_turn):
+    @patch("agentcore_proxy.agentcore_client")
+    def test_store_conversation_is_called(self, mock_agentcore_client, mock_store_turn):
         """Test that store_conversation_turn is called after a prompt."""
-        mock_runtime_client.invoke_agent_runtime.return_value = self.mock_agent_response
+        mock_agentcore_client.invoke_agent_runtime.return_value = self.mock_agent_response
 
         event = {
             "httpMethod": "POST",
@@ -192,7 +192,7 @@ class TestLambdaFunction:
         assert "error" in body
         assert "Missing 'prompt'" in body["error"]
 
-    @patch("agentcore_proxy.bedrock_agent_runtime_client")
+    @patch("agentcore_proxy.agentcore_client")
     def test_agentcore_error_returns_fallback(self, mock_client):
         """Test that a service error returns a graceful fallback response."""
         mock_client.invoke_agent_runtime.side_effect = Exception(
@@ -274,7 +274,7 @@ class TestLambdaFunction:
                 assert response["headers"][header] is not None
 
     @patch("agentcore_proxy.uuid.uuid4")
-    @patch("agentcore_proxy.bedrock_agent_runtime_client")
+    @patch("agentcore_proxy.agentcore_client")
     def test_trace_id_generation(self, mock_client, mock_uuid):
         """Test that traceId is properly generated and used"""
         mock_uuid.return_value = Mock()
