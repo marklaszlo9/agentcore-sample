@@ -10,6 +10,10 @@ Run with: opentelemetry-instrument python runtime_agent_main.py
 import asyncio
 import logging
 import os
+import sys
+
+# Add the parent directory of this file to the Python path
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '.')))
 import time
 from datetime import datetime
 
