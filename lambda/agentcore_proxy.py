@@ -129,7 +129,7 @@ async def async_lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str,
         }
 
     except Exception as e:
-        logger.error("Error processing request: %s", e, exc_info=True)
+        logger.error("FATAL: Unhandled exception in async_lambda_handler: %s", e, exc_info=True)
         return create_error_response(500, f"Internal server error: {e}")
 
 
@@ -190,7 +190,8 @@ def call_agentcore_runtime_sync(prompt: str, session_id: str) -> str:
         return process_agentcore_response(response)
 
     except Exception as e:
-        logger.error("Error calling AgentCore runtime: %s", e)
+        logger.error("Error calling AgentCore runtime: %s", e, exc_info=True)
+        logger.info("AgentCore runtime failed. Returning graceful fallback response.")
         return get_fallback_response(prompt)
 
 
