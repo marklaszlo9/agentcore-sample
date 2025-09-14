@@ -55,7 +55,7 @@ class TestLambdaFunction:
         assert "Access-Control-Allow-Methods" in response["headers"]
         assert "Access-Control-Allow-Headers" in response["headers"]
 
-    @patch("agentcore_proxy.agent_core_client")
+    @patch("agentcore_proxy.bedrock_agent_runtime_client")
     def test_successful_post_request(self, mock_client):
         """Test successful POST request with AgentCore response"""
         mock_client.invoke_agent_runtime.return_value = self.mock_agent_response
@@ -82,9 +82,68 @@ class TestLambdaFunction:
         body = json.loads(response["body"])
         assert "response" in body
         assert "sessionId" in body
-        assert "timestamp" in body
         assert body["sessionId"] == "test-session-123"
-        assert body["timestamp"] == "test-request-123"
+
+    @patch("agentcore_proxy.AGENTCORE_MEMORY_ID", "test-memory-id")
+    @patch("agentcore_proxy.bedrock_agentcore_client")
+    def test_get_history_request(self, mock_client):
+        """Test successful getHistory action"""
+        # Mock the get_memory response
+        mock_client.get_memory.return_value = {
+            "memoryContents": [
+                {"content": "User: Hello"},
+                {"content": "Agent: Hi there!"},
+            ]
+        }
+
+        event = {
+            "httpMethod": "POST",
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps(
+                {
+                    "action": "getHistory",
+                    "sessionId": "history-session-456",
+                    "k": 2,
+                }
+            ),
+        }
+
+        response = agentcore_proxy.lambda_handler(event, self.mock_context)
+
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert "messages" in body
+        assert len(body["messages"]) == 2
+        assert body["messages"][0]["role"] == "user"
+        assert body["messages"][0]["content"] == "Hello"
+        assert body["messages"][1]["role"] == "agent"
+        assert body["messages"][1]["content"] == "Hi there!"
+
+    @patch("agentcore_proxy.store_conversation_turn")
+    @patch("agentcore_proxy.bedrock_agent_runtime_client")
+    def test_store_conversation_is_called(self, mock_runtime_client, mock_store_turn):
+        """Test that store_conversation_turn is called after a prompt."""
+        mock_runtime_client.invoke_agent_runtime.return_value = self.mock_agent_response
+
+        event = {
+            "httpMethod": "POST",
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps(
+                {"prompt": "A new prompt", "sessionId": "session-to-store"}
+            ),
+        }
+
+        agentcore_proxy.lambda_handler(event, self.mock_context)
+
+        # Assert that our mock was called
+        mock_store_turn.assert_called_once()
+
+        # Check the arguments it was called with
+        call_args = mock_store_turn.call_args
+        assert call_args.args[0] == "session-to-store"
+        assert call_args.args[1] == "A new prompt"
+        assert "Hello! I am your AI assistant." in call_args.args[2]
+
 
     def test_missing_body(self):
         """Test request with missing body"""
@@ -133,7 +192,7 @@ class TestLambdaFunction:
         assert "error" in body
         assert "Missing 'prompt'" in body["error"]
 
-    @patch("agentcore_proxy.agent_core_client")
+    @patch("agentcore_proxy.bedrock_agent_runtime_client")
     def test_agentcore_error(self, mock_client):
         """Test AgentCore service error"""
         mock_client.invoke_agent_runtime.side_effect = Exception(
@@ -170,9 +229,9 @@ class TestLambdaFunction:
     def test_process_json_response(self):
         """Test processing of JSON response"""
         mock_streaming_body = Mock()
-        mock_streaming_body.iter_lines.return_value = [
+        mock_streaming_body.read.return_value = (
             b'{"response": "This is a JSON response"}'
-        ]
+        )
 
         response_data = {
             "contentType": "application/json",
@@ -214,7 +273,7 @@ class TestLambdaFunction:
                 assert response["headers"][header] is not None
 
     @patch("agentcore_proxy.uuid.uuid4")
-    @patch("agentcore_proxy.agent_core_client")
+    @patch("agentcore_proxy.bedrock_agent_runtime_client")
     def test_trace_id_generation(self, mock_client, mock_uuid):
         """Test that traceId is properly generated and used"""
         mock_uuid.return_value = Mock()
@@ -271,14 +330,13 @@ class TestResponseProcessing:
         response_data = {"contentType": "text/event-stream", "response": None}
 
         result = agentcore_proxy.process_agentcore_response(response_data)
-        # The function currently returns None for this edge case (streaming_body is None)
-        # This is the actual behavior - the function doesn't handle this case explicitly
+        # If the streaming_body is None, the function should return an empty string.
         assert (
-            result is None
-        ), f"Expected None for malformed event-stream response, got {type(result)}: '{result}'"
+            result == ""
+        ), f"Expected empty string for malformed event-stream response, got {type(result)}: '{result}'"
 
         # Test with a different content type that should reach the final fallback
-        response_data_fallback = {"contentType": "unknown/type", "response": None}
+        response_data_fallback = {"contentType": "unknown/type", "response": 12345}
 
         result_fallback = agentcore_proxy.process_agentcore_response(
             response_data_fallback
@@ -288,8 +346,8 @@ class TestResponseProcessing:
             result_fallback, str
         ), f"Expected str for fallback case, got {type(result_fallback)}"
         assert (
-            len(result_fallback) > 0
-        ), f"Expected non-empty string for fallback, got: '{result_fallback}'"
+            result_fallback == "12345"
+        ), f"Expected '12345' for fallback, got: '{result_fallback}'"
 
 
 if __name__ == "__main__":

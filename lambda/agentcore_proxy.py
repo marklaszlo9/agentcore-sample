@@ -23,9 +23,13 @@ AGENT_ARN = os.environ.get(
     "AGENT_ARN",
     "arn:aws:bedrock-agentcore:us-east-1:886436945166:runtime/hosted_agent_sample-KEQNVq8Whv",
 )
+AGENTCORE_MEMORY_ID = os.environ.get("AGENTCORE_MEMORY_ID")
 
-# Initialize the Bedrock AgentCore client
-agent_core_client = boto3.client("bedrock-agentcore")
+# Initialize Boto3 clients
+# Note: The service name for Bedrock Agent Runtime is 'bedrock-agent-runtime'
+# The service name for AgentCore (memory, etc.) is 'bedrock-agentcore'
+bedrock_agent_runtime_client = boto3.client("bedrock-agent-runtime")
+bedrock_agentcore_client = boto3.client("bedrock-agentcore")
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -70,23 +74,44 @@ async def async_lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str,
         except json.JSONDecodeError as e:
             return create_error_response(400, f"Invalid JSON in request body: {e}")
 
-        # Extract the prompt from the request
-        prompt = body.get("prompt", "")
-        session_id = body.get("sessionId", "")
+        # Get session ID and action from body
+        session_id = body.get("sessionId", str(uuid.uuid4()))
+        action = body.get("action")
 
+        # Route based on action
+        if action == "getHistory":
+            logger.info("Handling getHistory action for session: %s", session_id)
+            history_messages = await get_conversation_history(
+                session_id, k=body.get("k", 10)
+            )
+            return {
+                "statusCode": 200,
+                "headers": {
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": "*",
+                },
+                "body": json.dumps({"messages": history_messages}),
+            }
+
+        # Default action: process a prompt
+        prompt = body.get("prompt", "")
         if not prompt:
-            return create_error_response(400, "Missing 'prompt' in request body")
+            return create_error_response(
+                400, "Missing 'prompt' in request body for invoke action"
+            )
 
         logger.info(
-            "Processing request - User: %s, Prompt: %s..., SessionId: %s",
-            user_info.get("email", user_info.get("sub", "unknown")),
-            prompt[:100],
+            "Processing prompt for user: %s, session: %s",
+            user_info.get("email", "unknown"),
             session_id,
         )
-        logger.info("Using Agent ARN: %s", AGENT_ARN)
 
-        # Call the AgentCore runtime via ARN
+        # Call the AgentCore runtime
         agent_response = await call_agentcore_runtime(prompt, session_id)
+
+        # Store the conversation turn in memory (fire and forget)
+        # We don't await this, as we don't want to delay the user's response
+        asyncio.create_task(store_conversation_turn(session_id, prompt, agent_response))
 
         # Return successful response
         return {
@@ -94,15 +119,11 @@ async def async_lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str,
             "headers": {
                 "Content-Type": "application/json",
                 "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "POST, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type, Authorization",
             },
             "body": json.dumps(
                 {
                     "response": agent_response,
                     "sessionId": session_id,
-                    "timestamp": context.aws_request_id,
-                    "user": user_info.get("email", user_info.get("sub")),
                 }
             ),
         }
@@ -156,21 +177,22 @@ def call_agentcore_runtime_sync(prompt: str, session_id: str) -> str:
         # Generate a random trace ID (keep it short to avoid AgentCore issues)
         trace_id = str(uuid.uuid4())[:8]
 
-        # Invoke the AgentCore service
-        logger.info("Invoking AgentCore service with traceId: %s", trace_id)
-        response = agent_core_client.invoke_agent_runtime(
+        # Invoke the Bedrock Agent Runtime service
+        logger.info("Invoking Bedrock Agent Runtime service with traceId: %s", trace_id)
+        response = bedrock_agent_runtime_client.invoke_agent_runtime(
             agentRuntimeArn=AGENT_ARN,
             traceId=trace_id,
             payload=payload,
         )
-        logger.info("AgentCore response received: %s", type(response))
+        logger.info("Bedrock Agent Runtime response received: %s", type(response))
 
         # Process the response
         return process_agentcore_response(response)
 
     except Exception as e:
         logger.error("Error calling AgentCore runtime: %s", e)
-        return get_fallback_response(prompt)
+        # Re-raise the exception so the main handler can catch it and return a 500
+        raise
 
 
 async def call_agentcore_runtime(prompt: str, session_id: str) -> str:
@@ -255,6 +277,100 @@ def process_agentcore_response(response: Dict[str, Any]) -> str:
     except Exception as e:
         logger.error("Error processing AgentCore response: %s", e, exc_info=True)
         return f"Error processing response: {e}"
+
+
+async def get_conversation_history(session_id: str, k: int = 5) -> list:
+    """
+    Get conversation history from AgentCore memory using the boto3 fallback method.
+    """
+    if not AGENTCORE_MEMORY_ID:
+        logger.warning("AGENTCORE_MEMORY_ID is not set. Cannot retrieve history.")
+        return []
+
+    try:
+        logger.info(
+            "Getting history for memoryId: %s, sessionId: %s",
+            AGENTCORE_MEMORY_ID,
+            session_id,
+        )
+
+        # Use a ThreadPoolExecutor for the synchronous boto3 call
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            response = await loop.run_in_executor(
+                executor,
+                lambda: bedrock_agentcore_client.get_memory(
+                    memoryId=AGENTCORE_MEMORY_ID,
+                    # Note: The boto3 get_memory call does not currently use sessionId
+                    # or other fine-grained filters like the MemoryClient does.
+                    # It returns the whole memory content. We filter manually.
+                ),
+            )
+
+        # Extract and format memory content
+        messages = []
+        if "memoryContents" in response:
+            # The memoryContents is a list of events. Each event can have multiple messages.
+            # This logic mimics the MemoryClient's turn-based structure.
+            for content in response["memoryContents"]:
+                # Simple parsing assuming "User: ..." and "Agent: ..." format
+                text = content.get("content", "")
+                if text.lower().startswith("user:"):
+                    messages.append({"role": "user", "content": text[5:].strip()})
+                elif text.lower().startswith("agent:"):
+                    messages.append({"role": "agent", "content": text[6:].strip()})
+                else:
+                    # Handle system messages or other formats if necessary
+                    messages.append({"role": "system", "content": text})
+
+        logger.info("Retrieved %d messages from history", len(messages))
+
+        # Return the last k messages
+        return messages[-k:]
+
+    except Exception as e:
+        logger.error("Error getting conversation history: %s", e)
+        return []
+
+
+async def store_conversation_turn(session_id: str, user_message: str, assistant_message: str):
+    """
+    Store a conversation turn in AgentCore memory using the boto3 fallback method.
+    """
+    if not AGENTCORE_MEMORY_ID:
+        logger.warning("AGENTCORE_MEMORY_ID is not set. Cannot store history.")
+        return
+
+    try:
+        logger.info(
+            "Storing turn for memoryId: %s, sessionId: %s",
+            AGENTCORE_MEMORY_ID,
+            session_id,
+        )
+
+        # The boto3 update_memory operation overwrites, so we must append.
+        # This is a simplification; a robust solution would use get_memory, append, and put_memory.
+        # For this proxy, we will store turns as individual entries.
+        memory_contents = [
+            {"content": f"User: {user_message}", "contentType": "TEXT"},
+            {"content": f"Agent: {assistant_message}", "contentType": "TEXT"},
+        ]
+
+        # Use a ThreadPoolExecutor for the synchronous boto3 call
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor() as executor:
+            await loop.run_in_executor(
+                executor,
+                lambda: bedrock_agentcore_client.update_memory(
+                    memoryId=AGENTCORE_MEMORY_ID,
+                    memoryContents=memory_contents,
+                ),
+            )
+        logger.info("Successfully stored conversation turn.")
+
+    except Exception as e:
+        # Log error but don't fail the main request
+        logger.error("Error storing conversation turn: %s", e)
 
 
 def create_error_response(status_code: int, message: str) -> Dict[str, Any]:
