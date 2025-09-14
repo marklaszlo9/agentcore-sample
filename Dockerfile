@@ -12,7 +12,6 @@ RUN pip install --no-cache-dir -r requirements.txt --upgrade
 
 
 # Copy application files
-COPY launch.py .
 COPY custom_agent.py .
 COPY agent_cli.py .
 COPY runtime_agent_main.py .
@@ -41,5 +40,5 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
 
 # Run the AgentCore runtime with observability (as per AWS docs)
 # This follows the bedrock_agentcore_starter_toolkit pattern
-CMD ["opentelemetry-instrument", "python", "launch.py"]
+CMD ["opentelemetry-instrument", "python", "runtime_agent_main.py"]
 

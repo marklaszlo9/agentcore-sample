@@ -1,3 +1,4 @@
+import sys; sys.path.insert(0, '/app')
 """
 Custom Agent implementation using AgentCore Memory
 This preserves the existing logic while implementing proper AgentCore memory management.
