@@ -283,13 +283,13 @@ Follow these instructions precisely:
         )
 
     @aws_retry_on_expiration()
-    async def _converse(self, request_body: dict):
+    async def _converse_stream(self, request_body: dict):
         """
-        Call Bedrock converse. This method is decorated to handle retries.
+        Call Bedrock converse_stream. This method is decorated to handle retries.
         """
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            None, lambda: self.bedrock_runtime.converse(**request_body)
+            None, lambda: self.bedrock_runtime.converse_stream(**request_body)
         )
 
     async def _load_conversation_history(self, k: int = 5) -> str:
@@ -624,15 +624,15 @@ Follow these instructions precisely:
             }
 
             # Call Bedrock without memory
-            response = await self._converse(request_body)
+            stream = await self._converse_stream(request_body)
 
             # Extract response text
-            if "output" in response and "message" in response["output"]:
-                content = response["output"]["message"].get("content", [])
-                if content and len(content) > 0 and "text" in content[0]:
-                    return content[0]["text"]
-
-            return "I apologize, but I couldn't generate a response."
+            full_response = ""
+            if "stream" in stream:
+                for event in stream["stream"]:
+                    if "contentBlockDelta" in event:
+                        full_response += event["contentBlockDelta"]["delta"]["text"]
+            return full_response
 
         except Exception as e:
             logger.error(f"Error in query_without_memory: {str(e)}", exc_info=True)

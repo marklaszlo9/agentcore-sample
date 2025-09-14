@@ -636,70 +636,22 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
         "Access-Control-Allow-Methods": "POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Authorization",
     }
-    request_metadata = {
-        "method": request.method,
-        "path": request.path,
-        "remote_addr": request.remote,
-        "user_agent": request.headers.get("User-Agent", "unknown"),
-        "content_type": request.headers.get("Content-Type", "unknown"),
-        "content_length": request.headers.get("Content-Length", "0")
-    }
     
     try:
         if not runtime_instance:
-            # Log endpoint error with timing
-            if runtime_instance and runtime_instance.agent_logger:
-                execution_time_ms = int((time.time() - start_time) * 1000)
-                agent_info = AgentInfo(
-                    agent_name="http_endpoint",
-                    agent_type="endpoint",
-                    model_id="n/a",
-                    session_id="unknown",
-                    timestamp=datetime.now(),
-                    execution_time_ms=execution_time_ms
-                )
-                runtime_instance.agent_logger.log_agent_error(
-                    agent_info,
-                    Exception("Runtime not initialized"),
-                    context={
-                        "endpoint": "/invocations",
-                        "request_metadata": request_metadata,
-                        "error_type": "initialization_error"
-                    }
-                )
             return web.json_response({"error": "Runtime not initialized"}, status=503, headers=cors_headers)
 
-        # Parse request body
-        try:
-            body = await request.json()
-        except Exception as e:
-            logger.error(f"Failed to parse request body: {e}")
-            # Log parsing error with timing
-            if runtime_instance.agent_logger:
-                execution_time_ms = int((time.time() - start_time) * 1000)
-                agent_info = AgentInfo(
-                    agent_name="http_endpoint",
-                    agent_type="endpoint",
-                    model_id="n/a",
-                    session_id="unknown",
-                    timestamp=datetime.now(),
-                    execution_time_ms=execution_time_ms
-                )
-                runtime_instance.agent_logger.log_agent_error(
-                    agent_info,
-                    e,
-                    context={
-                        "endpoint": "/invocations",
-                        "request_metadata": request_metadata,
-                        "error_type": "json_parsing_error"
-                    }
-                )
-            return web.json_response(
-                {"error": "Invalid JSON in request body"}, status=400, headers=cors_headers
-            )
-
+        body = await request.json()
         session_id = body.get("sessionId", "default")
-        request_metadata["session_id"] = session_id
+        request_metadata = {
+            "method": request.method,
+            "path": request.path,
+            "remote_addr": request.remote,
+            "user_agent": request.headers.get("User-Agent", "unknown"),
+            "content_type": request.headers.get("Content-Type", "unknown"),
+            "content_length": request.headers.get("Content-Length", "0"),
+            "session_id": session_id
+        }
 
         # Handle different actions based on request body
         if body.get("action") == "getHistory":
@@ -798,98 +750,31 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
         # Log user query to separate prompt log group
         prompt_logger.info(f"USER_QUERY: {prompt}")
 
-        # Process the query
-        try:
-            response = await runtime_instance.process_query(prompt, session_id)
-            # Log agent response to separate prompt log group
-            prompt_logger.info(f"AGENT_RESPONSE: {response}")
-            # Keep abbreviated response in main log for debugging
-            logger.info(
-                f"Query processed successfully, response length: {len(response)} chars"
-            )
-            
-            # Log successful HTTP endpoint processing
-            if runtime_instance.agent_logger:
-                execution_time_ms = int((time.time() - start_time) * 1000)
-                agent_info = AgentInfo(
-                    agent_name="http_endpoint",
-                    agent_type="endpoint",
-                    model_id=runtime_instance.model_id,
-                    session_id=session_id,
-                    timestamp=datetime.now(),
-                    execution_time_ms=execution_time_ms
-                )
-                response_data = ResponseData(
-                    query=prompt,
-                    response=response,
-                    response_length=len(response),
-                    success=True,
-                    metadata={
-                        "endpoint": "/invocations",
-                        "action": "process_query",
-                        "request_metadata": request_metadata,
-                        "agent_mode": "multi_agent" if runtime_instance.use_multi_agent else "single_agent",
-                        "has_knowledge_base": bool(runtime_instance.knowledge_base_id)
-                    }
-                )
-                runtime_instance.agent_logger.log_agent_response(agent_info, response_data)
-            
-        except Exception as e:
-            logger.error(f"Error processing query: {e}")
-            prompt_logger.error(f"QUERY_ERROR: {e}")
-            response = f"Sorry, an error occurred while processing your request: {e}"
-            
-            # Log query processing error
-            if runtime_instance.agent_logger:
-                execution_time_ms = int((time.time() - start_time) * 1000)
-                agent_info = AgentInfo(
-                    agent_name="http_endpoint",
-                    agent_type="endpoint",
-                    model_id=runtime_instance.model_id,
-                    session_id=session_id,
-                    timestamp=datetime.now(),
-                    execution_time_ms=execution_time_ms
-                )
-                runtime_instance.agent_logger.log_agent_error(
-                    agent_info,
-                    e,
-                    context={
-                        "endpoint": "/invocations",
-                        "action": "process_query",
-                        "request_metadata": request_metadata,
-                        "query_length": len(prompt),
-                        "error_type": "query_processing_error"
-                    }
-                )
+        # Prepare a streaming response
+        response = web.StreamResponse(
+            status=200,
+            reason='OK',
+            headers={**cors_headers, 'Content-Type': 'text/plain; charset=utf-8'},
+        )
+        await response.prepare(request)
 
-        # Return only the response as plain text (no sessionId or timestamp)
-        return web.Response(text=response, status=200, content_type="text/plain", headers=cors_headers)
+        try:
+            # The agent's process_query now returns the full response, but we stream it out.
+            full_response_text = await runtime_instance.process_query(prompt, session_id)
+            await response.write(full_response_text.encode('utf-8'))
+            await response.write_eof()
+            
+            return response
+
+        except Exception as e:
+            logger.error(f"Error streaming query response: {e}", exc_info=True)
+            if not response.prepared:
+                return web.json_response({"error": f"Streaming Error: {e}"}, status=500, headers=cors_headers)
+            return response
 
     except Exception as e:
-        logger.error(f"Invocations endpoint error: {e}")
-        # Log general endpoint error
-        if runtime_instance and runtime_instance.agent_logger:
-            execution_time_ms = int((time.time() - start_time) * 1000)
-            agent_info = AgentInfo(
-                agent_name="http_endpoint",
-                agent_type="endpoint",
-                model_id="n/a",
-                session_id="unknown",
-                timestamp=datetime.now(),
-                execution_time_ms=execution_time_ms
-            )
-            runtime_instance.agent_logger.log_agent_error(
-                agent_info,
-                e,
-                context={
-                    "endpoint": "/invocations",
-                    "request_metadata": request_metadata,
-                    "error_type": "general_endpoint_error"
-                }
-            )
-        return web.json_response(
-            {"error": f"Internal server error: {e}"}, status=500, headers=cors_headers
-        )
+        logger.error(f"Invocations endpoint error: {e}", exc_info=True)
+        return web.json_response({"error": f"Internal server error: {e}"}, status=500, headers=cors_headers)
 
 
 async def start_http_server():
