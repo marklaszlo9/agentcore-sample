@@ -17,8 +17,8 @@ import boto3
 from aiohttp import web, web_request
 from watchtower import CloudWatchLogHandler
 
-from .custom_agent import CustomEnvisionAgent
-from .agent_logging import (
+from custom_agent import CustomEnvisionAgent
+from agent_logging import (
     create_agent_logger, 
     AgentInfo, 
     ResponseData, 
@@ -32,7 +32,7 @@ MULTI_AGENT_AVAILABLE = False
 multi_agent_orchestrator_error = None
 
 try:
-    from .multi_agent_orchestrator import EnvisionMultiAgentOrchestrator
+    from multi_agent_orchestrator import EnvisionMultiAgentOrchestrator
 
     MULTI_AGENT_AVAILABLE = True
 except ImportError as e:

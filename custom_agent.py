@@ -16,7 +16,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 # Import agent logging components
-from .agent_logging import (
+from agent_logging import (
     AgentResponseLogger,
     AgentInfo,
     ResponseData,
