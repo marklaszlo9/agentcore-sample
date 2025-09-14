@@ -631,6 +631,11 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
     Handles both prompt processing and other actions like history retrieval.
     """
     start_time = time.time()
+    cors_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    }
     request_metadata = {
         "method": request.method,
         "path": request.path,
@@ -662,7 +667,7 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
                         "error_type": "initialization_error"
                     }
                 )
-            return web.json_response({"error": "Runtime not initialized"}, status=503)
+            return web.json_response({"error": "Runtime not initialized"}, status=503, headers=cors_headers)
 
         # Parse request body
         try:
@@ -690,7 +695,7 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
                     }
                 )
             return web.json_response(
-                {"error": "Invalid JSON in request body"}, status=400
+                {"error": "Invalid JSON in request body"}, status=400, headers=cors_headers
             )
 
         session_id = body.get("sessionId", "default")
@@ -729,7 +734,7 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
                     )
                     runtime_instance.agent_logger.log_agent_response(agent_info, response_data)
                 
-                return web.json_response({"history": history}, status=200)
+                return web.json_response({"history": history}, status=200, headers=cors_headers)
                 
             except Exception as e:
                 logger.error(f"Error retrieving history: {e}")
@@ -754,7 +759,7 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
                             "error_type": "history_retrieval_error"
                         }
                     )
-                return web.json_response({"error": f"Failed to retrieve history: {e}"}, status=500)
+                return web.json_response({"error": f"Failed to retrieve history: {e}"}, status=500, headers=cors_headers)
 
         # Default action is to process a prompt
         prompt = None
@@ -787,7 +792,7 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
                     }
                 )
             return web.json_response(
-                {"error": "No prompt or valid action found in request"}, status=400
+                {"error": "No prompt or valid action found in request"}, status=400, headers=cors_headers
             )
 
         # Log user query to separate prompt log group
@@ -858,7 +863,7 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
                 )
 
         # Return only the response as plain text (no sessionId or timestamp)
-        return web.Response(text=response, status=200, content_type="text/plain")
+        return web.Response(text=response, status=200, content_type="text/plain", headers=cors_headers)
 
     except Exception as e:
         logger.error(f"Invocations endpoint error: {e}")
@@ -883,7 +888,7 @@ async def invocations_endpoint(request: web_request.Request) -> web.Response:
                 }
             )
         return web.json_response(
-            {"error": f"Internal server error: {e}"}, status=500
+            {"error": f"Internal server error: {e}"}, status=500, headers=cors_headers
         )
 
 
