@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir -r requirements.txt --upgrade
 
 
 # Copy application files
+COPY agent_logging.py .
 COPY custom_agent.py .
 COPY agent_cli.py .
 COPY runtime_agent_main.py .

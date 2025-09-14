@@ -16,23 +16,6 @@ import boto3
 from botocore.exceptions import ClientError
 
 # Import agent logging components
-import sys
-import os
-print("--- DIAGNOSTICS ---")
-print(f"Current Working Directory: {os.getcwd()}")
-print("sys.path:")
-for p in sys.path:
-    print(f"  - {p}")
-agent_logging_path = '/app/agent_logging.py'
-print(f"Checking for: {agent_logging_path}")
-print(f"Exists: {os.path.exists(agent_logging_path)}")
-print(f"Is file: {os.path.isfile(agent_logging_path)}")
-try:
-    with open(agent_logging_path, 'r') as f:
-        print("File is readable.")
-except Exception as e:
-    print(f"File not readable: {e}")
-print("--- END DIAGNOSTICS ---")
 from agent_logging import (
     AgentResponseLogger,
     AgentInfo,
