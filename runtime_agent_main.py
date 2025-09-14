@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import sys; sys.path.insert(0, '/app')
 """
 Runtime Agent Main - Entry point for AgentCore-hosted agents with observability
 This follows the AWS documentation pattern for AgentCore-hosted agents:
