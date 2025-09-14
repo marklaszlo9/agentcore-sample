@@ -40,5 +40,5 @@ HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
 
 # Run the AgentCore runtime with observability (as per AWS docs)
 # This follows the bedrock_agentcore_starter_toolkit pattern
-CMD ["opentelemetry-instrument", "python", "runtime_agent_main.py"]
+CMD ["opentelemetry-instrument", "python", "-m", "runtime_agent_main"]
 
