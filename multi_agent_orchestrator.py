@@ -6,6 +6,8 @@ Uses Strands Agent with AgentCore to coordinate between knowledge base queries a
 import asyncio
 import json
 import logging
+import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from strands import Agent
@@ -14,6 +16,18 @@ from strands.hooks import (
     HookProvider,
     HookRegistry,
     MessageAddedEvent,
+)
+
+# Import agent logging components
+from agent_logging import (
+    AgentResponseLogger,
+    AgentInfo,
+    ResponseData,
+    RoutingInfo,
+    LoggingConfigManager,
+    create_agent_logger,
+    create_response_wrapper,
+    AgentResponseWrapper
 )
 
 # Try to import AgentCore components with fallbacks and detailed logging
@@ -206,6 +220,22 @@ class EnvisionMultiAgentOrchestrator:
         self.session_id = session_id
         self.actor_id = f"envision_orchestrator_{self.session_id}" if self.session_id else "default_actor"
         self.branch_name = "main"
+        
+        # Initialize agent response logger
+        try:
+            self.agent_logger = create_agent_logger()
+            logger.info("Agent response logging initialized successfully")
+        except Exception as e:
+            logger.warning(f"Failed to initialize agent response logging: {e}")
+            self.agent_logger = None
+        
+        # Initialize response wrapper for user-facing agent identification
+        try:
+            self.response_wrapper = create_response_wrapper()
+            logger.info("Agent response wrapper initialized successfully")
+        except Exception as e:
+            logger.warning(f"Failed to initialize agent response wrapper: {e}")
+            self.response_wrapper = None
 
         # Initialize AgentCore client and memory with fallbacks
         if BedrockAgentCoreClient:
@@ -360,13 +390,18 @@ Your goal is to educate and inform about sustainability topics in a way that's a
         Returns:
             The response from the appropriate specialist agent
         """
+        start_time = time.time()
+        orchestrator_start_time = start_time
+        
         try:
             logger.info(f"Processing query: {user_query[:100]}...")
 
-            # Step 1: Get orchestrator decision
+            # Step 1: Get orchestrator decision with timing
             orchestrator_response = await self._get_orchestrator_decision(
                 user_query, session_id
             )
+            orchestrator_end_time = time.time()
+            orchestrator_execution_time = int((orchestrator_end_time - orchestrator_start_time) * 1000)
 
             # Step 2: Log the routing decision with model info
             chosen_agent_name = orchestrator_response.get("agent")
@@ -385,7 +420,31 @@ Your goal is to educate and inform about sustainability topics in a way that's a
                 f"Reasoning: {reasoning}"
             )
 
-            # Step 3: Route to appropriate agent
+            # Log orchestrator decision
+            if self.agent_logger:
+                try:
+                    orchestrator_info = AgentInfo(
+                        agent_name="orchestrator",
+                        agent_type="orchestrator",
+                        model_id=self.orchestrator.model,
+                        session_id=session_id,
+                        timestamp=datetime.now(),
+                        execution_time_ms=orchestrator_execution_time
+                    )
+                    
+                    routing_info = RoutingInfo(
+                        selected_agent=chosen_agent_name,
+                        routing_reasoning=reasoning,
+                        available_agents=["knowledge", "general"]
+                    )
+                    
+                    self.agent_logger.log_routing_decision(orchestrator_info, routing_info)
+                except Exception as e:
+                    logger.warning(f"Failed to log routing decision: {e}")
+
+            # Step 3: Route to appropriate agent with timing
+            agent_start_time = time.time()
+            
             if chosen_agent_name == "knowledge":
                 response = await self._query_knowledge_agent(
                     orchestrator_response["query"],
@@ -396,8 +455,74 @@ Your goal is to educate and inform about sustainability topics in a way that's a
                     orchestrator_response["query"],
                     session_id
                 )
+            
+            agent_end_time = time.time()
+            agent_execution_time = int((agent_end_time - agent_start_time) * 1000)
+            total_execution_time = int((agent_end_time - start_time) * 1000)
 
-            # Step 3: Store in memory for context
+            # Log agent response
+            if self.agent_logger:
+                try:
+                    agent_info = AgentInfo(
+                        agent_name=chosen_agent_instance.name,
+                        agent_type=chosen_agent_name,
+                        model_id=chosen_agent_instance.model,
+                        session_id=session_id,
+                        timestamp=datetime.now(),
+                        execution_time_ms=agent_execution_time
+                    )
+                    
+                    response_data = ResponseData(
+                        query=user_query,
+                        response=response,
+                        response_length=len(response),
+                        success=True,
+                        metadata={
+                            "orchestrator_execution_time_ms": orchestrator_execution_time,
+                            "agent_execution_time_ms": agent_execution_time,
+                            "total_execution_time_ms": total_execution_time,
+                            "routing_reasoning": reasoning,
+                            "selected_from_agents": ["knowledge", "general"]
+                        }
+                    )
+                    
+                    self.agent_logger.log_agent_response(agent_info, response_data)
+                except Exception as e:
+                    logger.warning(f"Failed to log agent response: {e}")
+
+            # Step 4: Apply user-facing response wrapper if enabled
+            final_response = response
+            if self.response_wrapper:
+                try:
+                    # Create agent info for the selected agent
+                    selected_agent_info = AgentInfo(
+                        agent_name=chosen_agent_instance.name,
+                        agent_type=chosen_agent_name,
+                        model_id=chosen_agent_instance.model,
+                        session_id=session_id,
+                        timestamp=datetime.now(),
+                        execution_time_ms=agent_execution_time
+                    )
+                    
+                    # Create orchestrator info
+                    orchestrator_info = AgentInfo(
+                        agent_name="orchestrator",
+                        agent_type="orchestrator",
+                        model_id=self.orchestrator.model,
+                        session_id=session_id,
+                        timestamp=datetime.now(),
+                        execution_time_ms=orchestrator_execution_time
+                    )
+                    
+                    # Wrap the response with agent identification
+                    final_response = self.response_wrapper.wrap_multi_agent_response(
+                        response, orchestrator_info, selected_agent_info, reasoning
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to wrap response with agent identification: {e}")
+                    final_response = response
+
+            # Step 5: Store in memory for context
             if self.memory_client and self.memory_id:
                 try:
                     await self.memory_client.create_event(
@@ -406,15 +531,41 @@ Your goal is to educate and inform about sustainability topics in a way that's a
                         session_id=session_id,
                         messages=[
                             (user_query, "user"),
-                            (response, "assistant"),
+                            (final_response, "assistant"),
                         ],
                     )
                 except Exception as e:
                     logger.warning(f"Could not store conversation in memory: {e}")
 
-            return response
+            return final_response
 
         except Exception as e:
+            # Log error with timing information
+            error_time = time.time()
+            error_execution_time = int((error_time - start_time) * 1000)
+            
+            if self.agent_logger:
+                try:
+                    error_agent_info = AgentInfo(
+                        agent_name="orchestrator",
+                        agent_type="orchestrator", 
+                        model_id=self.orchestrator.model,
+                        session_id=session_id,
+                        timestamp=datetime.now(),
+                        execution_time_ms=error_execution_time
+                    )
+                    
+                    self.agent_logger.log_agent_error(
+                        error_agent_info, 
+                        e, 
+                        context={
+                            "query": user_query[:200],  # Truncated for privacy
+                            "processing_stage": "multi_agent_orchestration"
+                        }
+                    )
+                except Exception as log_error:
+                    logger.warning(f"Failed to log agent error: {log_error}")
+            
             logger.error(f"Error processing query: {str(e)}")
             return f"I apologize, but I encountered an error while processing your question: {str(e)}"
 
@@ -496,6 +647,8 @@ Analyze this question and decide which agent should handle it."""
         self, query: str, session_id: str
     ) -> str:
         """Query the knowledge base agent"""
+        start_time = time.time()
+        
         try:
             # Get relevant conversation history
             if self.memory_client and self.memory_id:
@@ -530,9 +683,67 @@ Please provide a detailed response based on the Envision Sustainable Infrastruct
                 if isinstance(response, dict)
                 else str(response)
             )
+            
+            end_time = time.time()
+            execution_time = int((end_time - start_time) * 1000)
+            
+            # Log individual agent response
+            if self.agent_logger:
+                try:
+                    agent_info = AgentInfo(
+                        agent_name=self.knowledge_agent.name,
+                        agent_type="knowledge",
+                        model_id=self.knowledge_agent.model,
+                        session_id=session_id,
+                        timestamp=datetime.now(),
+                        execution_time_ms=execution_time
+                    )
+                    
+                    response_data = ResponseData(
+                        query=query,
+                        response=response_content,
+                        response_length=len(response_content),
+                        success=True,
+                        metadata={
+                            "knowledge_base_used": True,
+                            "context_length": len(context),
+                            "agent_mode": "knowledge_specialist"
+                        }
+                    )
+                    
+                    self.agent_logger.log_agent_response(agent_info, response_data)
+                except Exception as e:
+                    logger.warning(f"Failed to log knowledge agent response: {e}")
+            
             return response_content
 
         except Exception as e:
+            end_time = time.time()
+            execution_time = int((end_time - start_time) * 1000)
+            
+            # Log knowledge agent error
+            if self.agent_logger:
+                try:
+                    error_agent_info = AgentInfo(
+                        agent_name=self.knowledge_agent.name,
+                        agent_type="knowledge",
+                        model_id=self.knowledge_agent.model,
+                        session_id=session_id,
+                        timestamp=datetime.now(),
+                        execution_time_ms=execution_time
+                    )
+                    
+                    self.agent_logger.log_agent_error(
+                        error_agent_info,
+                        e,
+                        context={
+                            "query": query[:200],  # Truncated for privacy
+                            "agent_mode": "knowledge_specialist"
+                        }
+                    )
+                except Exception as log_error:
+                    logger.warning(f"Failed to log knowledge agent error: {log_error}")
+            
             logger.error(f"Error querying knowledge agent: {e}")
             return f"I apologize, but I encountered an error accessing the Envision knowledge base: {str(e)}"
 
@@ -540,6 +751,8 @@ Please provide a detailed response based on the Envision Sustainable Infrastruct
         self, query: str, session_id: str
     ) -> str:
         """Query the general sustainability agent"""
+        start_time = time.time()
+        
         try:
             # Get relevant conversation history
             if self.memory_client and self.memory_id:
@@ -574,9 +787,67 @@ Please provide a comprehensive response on this sustainability topic."""
                 if isinstance(response, dict)
                 else str(response)
             )
+            
+            end_time = time.time()
+            execution_time = int((end_time - start_time) * 1000)
+            
+            # Log individual agent response
+            if self.agent_logger:
+                try:
+                    agent_info = AgentInfo(
+                        agent_name=self.general_sustainability_agent.name,
+                        agent_type="general",
+                        model_id=self.general_sustainability_agent.model,
+                        session_id=session_id,
+                        timestamp=datetime.now(),
+                        execution_time_ms=execution_time
+                    )
+                    
+                    response_data = ResponseData(
+                        query=query,
+                        response=response_content,
+                        response_length=len(response_content),
+                        success=True,
+                        metadata={
+                            "knowledge_base_used": False,
+                            "context_length": len(context),
+                            "agent_mode": "general_sustainability"
+                        }
+                    )
+                    
+                    self.agent_logger.log_agent_response(agent_info, response_data)
+                except Exception as e:
+                    logger.warning(f"Failed to log general agent response: {e}")
+            
             return response_content
 
         except Exception as e:
+            end_time = time.time()
+            execution_time = int((end_time - start_time) * 1000)
+            
+            # Log general agent error
+            if self.agent_logger:
+                try:
+                    error_agent_info = AgentInfo(
+                        agent_name=self.general_sustainability_agent.name,
+                        agent_type="general",
+                        model_id=self.general_sustainability_agent.model,
+                        session_id=session_id,
+                        timestamp=datetime.now(),
+                        execution_time_ms=execution_time
+                    )
+                    
+                    self.agent_logger.log_agent_error(
+                        error_agent_info,
+                        e,
+                        context={
+                            "query": query[:200],  # Truncated for privacy
+                            "agent_mode": "general_sustainability"
+                        }
+                    )
+                except Exception as log_error:
+                    logger.warning(f"Failed to log general agent error: {log_error}")
+            
             logger.error(f"Error querying general sustainability agent: {e}")
             return f"I apologize, but I encountered an error with the sustainability expert: {str(e)}"
 

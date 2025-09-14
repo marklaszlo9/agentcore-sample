@@ -8,10 +8,22 @@ import asyncio
 import functools
 import logging
 import os
+import time
+from datetime import datetime
 from typing import Any, Optional
 
 import boto3
 from botocore.exceptions import ClientError
+
+# Import agent logging components
+from agent_logging import (
+    AgentResponseLogger,
+    AgentInfo,
+    ResponseData,
+    create_agent_logger,
+    create_response_wrapper,
+    AgentResponseWrapper
+)
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +116,8 @@ class CustomEnvisionAgent:
         system_prompt: Optional[str] = None,
         user_id: Optional[str] = None,
         memory_id: Optional[str] = None,
+        agent_name: Optional[str] = None,
+        agent_type: Optional[str] = None,
     ):
 
         # Default system prompt for Envision
@@ -129,6 +143,26 @@ Follow these instructions precisely:
         self.actor_id = f"envision_agent_{self.user_id}"
         self.session_id = self.user_id
         self.branch_name = "main"
+        
+        # Agent identification for logging
+        self.agent_name = agent_name or "custom_envision_agent"
+        self.agent_type = agent_type or "custom"
+        
+        # Initialize agent response logger
+        try:
+            self.agent_logger = create_agent_logger()
+            logger.info("Agent response logging initialized successfully")
+        except Exception as e:
+            logger.warning(f"Failed to initialize agent response logging: {e}")
+            self.agent_logger = None
+        
+        # Initialize response wrapper for user-facing agent identification
+        try:
+            self.response_wrapper = create_response_wrapper()
+            logger.info("Agent response wrapper initialized successfully")
+        except Exception as e:
+            logger.warning(f"Failed to initialize agent response wrapper: {e}")
+            self.response_wrapper = None
 
         # Initialize AgentCore MemoryClient if available, otherwise use boto3 fallback
         self.memory_client = None
@@ -426,6 +460,8 @@ Follow these instructions precisely:
         """
         Query the agent using RAG with AgentCore memory.
         """
+        start_time = time.time()
+        
         try:
             if not self.knowledge_base_id:
                 logger.warning("No knowledge base configured, using direct query")
@@ -482,9 +518,95 @@ Follow these instructions precisely:
             # Update AgentCore memory with the conversation
             await self.update_memory(query, response)
 
-            return response
+            # Log successful response
+            end_time = time.time()
+            execution_time = int((end_time - start_time) * 1000)
+            
+            if self.agent_logger:
+                try:
+                    agent_info = AgentInfo(
+                        agent_name=self.agent_name,
+                        agent_type=self.agent_type,
+                        model_id=self.model_id,
+                        session_id=self.session_id,
+                        timestamp=datetime.now(),
+                        execution_time_ms=execution_time
+                    )
+                    
+                    response_data = ResponseData(
+                        query=query,
+                        response=response,
+                        response_length=len(response),
+                        success=True,
+                        metadata={
+                            "knowledge_base_used": True,
+                            "knowledge_base_id": self.knowledge_base_id,
+                            "contexts_found": len(contexts),
+                            "memory_context_length": len(memory_context) if memory_context else 0,
+                            "method": "query_with_rag"
+                        }
+                    )
+                    
+                    self.agent_logger.log_agent_response(agent_info, response_data)
+                except Exception as e:
+                    logger.warning(f"Failed to log agent response: {e}")
+
+            # Apply user-facing response wrapper if enabled
+            final_response = response
+            if self.response_wrapper:
+                try:
+                    agent_info = AgentInfo(
+                        agent_name=self.agent_name,
+                        agent_type=self.agent_type,
+                        model_id=self.model_id,
+                        session_id=self.session_id,
+                        timestamp=datetime.now(),
+                        execution_time_ms=execution_time
+                    )
+                    
+                    additional_info = {
+                        "knowledge_base_used": True,
+                        "contexts_found": len(contexts)
+                    }
+                    
+                    final_response = self.response_wrapper.wrap_response(
+                        response, agent_info, additional_info
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to wrap response with agent identification: {e}")
+                    final_response = response
+
+            return final_response
 
         except Exception as e:
+            # Log error with timing information
+            end_time = time.time()
+            execution_time = int((end_time - start_time) * 1000)
+            
+            if self.agent_logger:
+                try:
+                    error_agent_info = AgentInfo(
+                        agent_name=self.agent_name,
+                        agent_type=self.agent_type,
+                        model_id=self.model_id,
+                        session_id=self.session_id,
+                        timestamp=datetime.now(),
+                        execution_time_ms=execution_time
+                    )
+                    
+                    self.agent_logger.log_agent_error(
+                        error_agent_info,
+                        e,
+                        context={
+                            "query": query[:200],  # Truncated for privacy
+                            "method": "query_with_rag",
+                            "knowledge_base_id": self.knowledge_base_id,
+                            "max_results": max_results
+                        }
+                    )
+                except Exception as log_error:
+                    logger.warning(f"Failed to log agent error: {log_error}")
+            
             logger.error(f"Error in query_with_rag: {str(e)}", exc_info=True)
             return f"Sorry, an error occurred while processing your request: {str(e)}"
 
@@ -520,6 +642,8 @@ Follow these instructions precisely:
         """
         Direct query with AgentCore memory.
         """
+        start_time = time.time()
+        
         try:
             # Get memory content for context
             memory_context = await self.get_memory_content()
@@ -536,9 +660,98 @@ Follow these instructions precisely:
             # Update AgentCore memory with the conversation
             await self.update_memory(prompt, response)
 
-            return response
+            # Log successful response
+            end_time = time.time()
+            execution_time = int((end_time - start_time) * 1000)
+            
+            if self.agent_logger:
+                try:
+                    agent_info = AgentInfo(
+                        agent_name=self.agent_name,
+                        agent_type=self.agent_type,
+                        model_id=self.model_id,
+                        session_id=self.session_id,
+                        timestamp=datetime.now(),
+                        execution_time_ms=execution_time
+                    )
+                    
+                    response_data = ResponseData(
+                        query=prompt,
+                        response=response,
+                        response_length=len(response),
+                        success=True,
+                        metadata={
+                            "knowledge_base_used": False,
+                            "memory_context_length": len(memory_context) if memory_context else 0,
+                            "method": "query"
+                        }
+                    )
+                    
+                    self.agent_logger.log_agent_response(agent_info, response_data)
+                except Exception as e:
+                    logger.warning(f"Failed to log agent response: {e}")
+
+            # Apply user-facing response wrapper if enabled
+            final_response = response
+            if self.response_wrapper:
+                try:
+                    agent_info = AgentInfo(
+                        agent_name=self.agent_name,
+                        agent_type=self.agent_type,
+                        model_id=self.model_id,
+                        session_id=self.session_id,
+                        timestamp=datetime.now(),
+                        execution_time_ms=execution_time
+                    )
+                    
+                    additional_info = {
+                        "knowledge_base_used": False,
+                        "memory_context_available": bool(memory_context)
+                    }
+                    
+                    final_response = self.response_wrapper.wrap_response(
+                        response, agent_info, additional_info
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to wrap response with agent identification: {e}")
+                    final_response = response
+
+            return final_response
 
         except Exception as e:
+            # Log error with timing information
+            end_time = time.time()
+            execution_time = int((end_time - start_time) * 1000)
+            
+            if self.agent_logger:
+                try:
+                    error_agent_info = AgentInfo(
+                        agent_name=self.agent_name,
+                        agent_type=self.agent_type,
+                        model_id=self.model_id,
+                        session_id=self.session_id,
+                        timestamp=datetime.now(),
+                        execution_time_ms=execution_time
+                    )
+                    
+                    # Safely check memory context availability
+                    try:
+                        memory_available = bool(await self.get_memory_content())
+                    except:
+                        memory_available = False
+                    
+                    self.agent_logger.log_agent_error(
+                        error_agent_info,
+                        e,
+                        context={
+                            "query": prompt[:200],  # Truncated for privacy
+                            "method": "query",
+                            "memory_context_available": memory_available
+                        }
+                    )
+                except Exception as log_error:
+                    logger.warning(f"Failed to log agent error: {log_error}")
+            
             logger.error(f"Error in query: {str(e)}", exc_info=True)
             return f"Sorry, an error occurred: {str(e)}"
 
