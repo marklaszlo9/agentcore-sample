@@ -191,8 +191,7 @@ def call_agentcore_runtime_sync(prompt: str, session_id: str) -> str:
 
     except Exception as e:
         logger.error("Error calling AgentCore runtime: %s", e)
-        # Re-raise the exception so the main handler can catch it and return a 500
-        raise
+        return get_fallback_response(prompt)
 
 
 async def call_agentcore_runtime(prompt: str, session_id: str) -> str:

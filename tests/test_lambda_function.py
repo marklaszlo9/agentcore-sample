@@ -193,8 +193,8 @@ class TestLambdaFunction:
         assert "Missing 'prompt'" in body["error"]
 
     @patch("agentcore_proxy.bedrock_agent_runtime_client")
-    def test_agentcore_error(self, mock_client):
-        """Test AgentCore service error"""
+    def test_agentcore_error_returns_fallback(self, mock_client):
+        """Test that a service error returns a graceful fallback response."""
         mock_client.invoke_agent_runtime.side_effect = Exception(
             "AgentCore service unavailable"
         )
@@ -207,12 +207,13 @@ class TestLambdaFunction:
 
         response = agentcore_proxy.lambda_handler(event, self.mock_context)
 
-        assert response["statusCode"] == 500
+        # The handler should now catch the error and return a 200 with a fallback message
+        assert response["statusCode"] == 200
         assert "Access-Control-Allow-Origin" in response["headers"]
 
         body = json.loads(response["body"])
-        assert "error" in body
-        assert "Internal server error" in body["error"]
+        assert "response" in body
+        assert "simplified mode" in body["response"]
 
     def test_process_event_stream_response(self):
         """Test processing of event-stream response"""
