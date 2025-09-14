@@ -107,9 +107,8 @@ async def async_lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str,
         # Call the AgentCore runtime
         agent_response = await call_agentcore_runtime(prompt, session_id)
 
-        # Store the conversation turn in memory (fire and forget)
-        # We don't await this, as we don't want to delay the user's response
-        asyncio.create_task(store_conversation_turn(session_id, prompt, agent_response))
+        # Store the conversation turn in memory
+        await store_conversation_turn(session_id, prompt, agent_response)
 
         # Return successful response
         return {
@@ -333,42 +332,47 @@ async def get_conversation_history(session_id: str, k: int = 5) -> list:
 
 async def store_conversation_turn(session_id: str, user_message: str, assistant_message: str):
     """
-    Store a conversation turn in AgentCore memory using the boto3 fallback method.
+    Store a conversation turn by appending to the history in AgentCore memory.
     """
     if not AGENTCORE_MEMORY_ID:
         logger.warning("AGENTCORE_MEMORY_ID is not set. Cannot store history.")
         return
 
     try:
-        logger.info(
-            "Storing turn for memoryId: %s, sessionId: %s",
-            AGENTCORE_MEMORY_ID,
-            session_id,
-        )
+        logger.info("Storing turn for memoryId: %s", AGENTCORE_MEMORY_ID)
+        loop = asyncio.get_event_loop()
 
-        # The boto3 update_memory operation overwrites, so we must append.
-        # This is a simplification; a robust solution would use get_memory, append, and put_memory.
-        # For this proxy, we will store turns as individual entries.
-        memory_contents = [
+        # 1. Get current memory
+        with ThreadPoolExecutor() as executor:
+            response = await loop.run_in_executor(
+                executor,
+                lambda: agentcore_client.get_memory(memoryId=AGENTCORE_MEMORY_ID),
+            )
+
+        existing_contents = response.get("memoryContents", [])
+        logger.info("Retrieved %d existing memory entries.", len(existing_contents))
+
+        # 2. Append new turn
+        new_contents = [
             {"content": f"User: {user_message}", "contentType": "TEXT"},
             {"content": f"Agent: {assistant_message}", "contentType": "TEXT"},
         ]
+        updated_contents = existing_contents + new_contents
 
-        # Use a ThreadPoolExecutor for the synchronous boto3 call
-        loop = asyncio.get_event_loop()
+        # 3. Put updated memory
         with ThreadPoolExecutor() as executor:
             await loop.run_in_executor(
                 executor,
                 lambda: agentcore_client.update_memory(
                     memoryId=AGENTCORE_MEMORY_ID,
-                    memoryContents=memory_contents,
+                    memoryContents=updated_contents,
                 ),
             )
-        logger.info("Successfully stored conversation turn.")
+        logger.info("Successfully stored updated conversation history with %d entries.", len(updated_contents))
 
     except Exception as e:
         # Log error but don't fail the main request
-        logger.error("Error storing conversation turn: %s", e)
+        logger.error("Error storing conversation turn: %s", e, exc_info=True)
 
 
 def create_error_response(status_code: int, message: str) -> Dict[str, Any]:

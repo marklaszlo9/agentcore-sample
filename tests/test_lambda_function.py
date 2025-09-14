@@ -119,30 +119,39 @@ class TestLambdaFunction:
         assert body["messages"][1]["role"] == "agent"
         assert body["messages"][1]["content"] == "Hi there!"
 
-    @patch("agentcore_proxy.store_conversation_turn")
+    @patch("agentcore_proxy.AGENTCORE_MEMORY_ID", "test-memory-id")
     @patch("agentcore_proxy.agentcore_client")
-    def test_store_conversation_is_called(self, mock_agentcore_client, mock_store_turn):
-        """Test that store_conversation_turn is called after a prompt."""
-        mock_agentcore_client.invoke_agent_runtime.return_value = self.mock_agent_response
+    def test_store_conversation_appends_history(self, mock_client):
+        """Test that storing a conversation appends to existing history."""
+        # Arrange: Mock the responses for get_memory and invoke_agent_runtime
+        mock_client.invoke_agent_runtime.return_value = self.mock_agent_response
+        mock_client.get_memory.return_value = {
+            "memoryContents": [{"content": "User: Old prompt"}]
+        }
 
         event = {
             "httpMethod": "POST",
             "headers": {"Content-Type": "application/json"},
             "body": json.dumps(
-                {"prompt": "A new prompt", "sessionId": "session-to-store"}
+                {"prompt": "New prompt", "sessionId": "session-to-store"}
             ),
         }
 
+        # Act
         agentcore_proxy.lambda_handler(event, self.mock_context)
 
-        # Assert that our mock was called
-        mock_store_turn.assert_called_once()
+        # Assert
+        mock_client.get_memory.assert_called_once_with(memoryId="test-memory-id")
+        mock_client.update_memory.assert_called_once()
 
-        # Check the arguments it was called with
-        call_args = mock_store_turn.call_args
-        assert call_args.args[0] == "session-to-store"
-        assert call_args.args[1] == "A new prompt"
-        assert "Hello! I am your AI assistant." in call_args.args[2]
+        # Check that update_memory was called with the appended history
+        call_args = mock_client.update_memory.call_args
+        updated_contents = call_args.kwargs["memoryContents"]
+
+        assert len(updated_contents) == 3
+        assert updated_contents[0]["content"] == "User: Old prompt"
+        assert updated_contents[1]["content"] == "User: New prompt"
+        assert "Agent: Hello! I am your AI assistant." in updated_contents[2]["content"]
 
 
     def test_missing_body(self):
