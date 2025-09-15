@@ -345,33 +345,16 @@
             try {
                 console.log('Loading conversation history for session:', sessionId);
                 
-                // For history requests, try runtime service first (if available), then Lambda
-                let apiUrl = 'http://localhost:8080/invocations'; // Direct AgentCore Runtime service URL
-                let useRuntimeService = true;
+                // Always use the Lambda API URL for history requests
+                let apiUrl = LAMBDA_API_URL;
                 let headers = {
                     'Content-Type': 'application/json',
                 };
                 
-                // Check if runtime service is available
-                try {
-                    const healthCheck = await fetch('http://localhost:8080/health', { 
-                        method: 'GET',
-                        signal: AbortSignal.timeout(2000) // 2 second timeout
-                    });
-                    if (!healthCheck.ok) {
-                        throw new Error('Runtime service not healthy');
-                    }
-                    console.log('Runtime service is available, using direct connection');
-                } catch (e) {
-                    console.log('Runtime service not available, falling back to Lambda:', e.message);
-                    apiUrl = LAMBDA_API_URL;
-                    useRuntimeService = false;
-                    
-                    // Add auth headers for Lambda
-                    const accessToken = await getAccessToken();
-                    if (accessToken) {
-                        headers['Authorization'] = `Bearer ${accessToken}`;
-                    }
+                // Add auth headers for Lambda
+                const accessToken = await getAccessToken();
+                if (accessToken) {
+                    headers['Authorization'] = `Bearer ${accessToken}`;
                 }
                 
                 console.log('Making history request to:', apiUrl);
