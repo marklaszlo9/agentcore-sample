@@ -23,11 +23,11 @@ AGENT_ARN = os.environ.get(
     "AGENT_ARN",
     "arn:aws:bedrock-agentcore:us-east-1:886436945166:runtime/hosted_agent_sample-KEQNVq8Whv",
 )
-AGENTCORE_MEMORY_ID = os.environ.get("AGENTCORE_MEMORY_ID")
+AGENTCORE_MEMORY_ID = os.environ.get("AGENTCORE_MEMORY_ID", "memory_io2n5-94iksj6Jr7")
 
-# Initialize the Bedrock AgentCore client
-# This client is used for both invoking the agent runtime and memory operations.
-agentcore_client = boto3.client("bedrock-agentcore")
+# Initialize Boto3 clients
+bedrock_agent_runtime_client = boto3.client("bedrock-agent-runtime")
+bedrock_agentcore_control_client = boto3.client("bedrock-agentcore-control")
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -163,32 +163,44 @@ def extract_user_from_context(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def call_agentcore_runtime_sync(prompt: str, session_id: str) -> str:
-    """Synchronous call to the AgentCore runtime via ARN."""
+    """Synchronous call to the Bedrock Agent Runtime using invoke_agent."""
     try:
-        # Prepare the payload for AgentCore
-        payload = json.dumps({"prompt": prompt, "sessionId": session_id}).encode(
-            "utf-8"
+        # Parse agentId and agentAliasId from AGENT_ARN
+        try:
+            agent_id = AGENT_ARN.split("/")[-1]
+            # A common default alias is TSTALIASID. This should be configured.
+            agent_alias_id = os.environ.get("AGENT_ALIAS_ID", "TSTALIASID")
+        except IndexError:
+            raise ValueError(f"Invalid AGENT_ARN format: {AGENT_ARN}")
+
+        logger.info(
+            "Invoking agent %s (alias %s) for session %s",
+            agent_id,
+            agent_alias_id,
+            session_id,
         )
-        logger.info("Payload prepared: %d bytes", len(payload))
 
-        # Generate a random trace ID (keep it short to avoid AgentCore issues)
-        trace_id = str(uuid.uuid4())[:8]
-
-        # Invoke the Bedrock Agent Runtime service
-        logger.info("Invoking Bedrock Agent Runtime service with traceId: %s", trace_id)
-        response = agentcore_client.invoke_agent_runtime(
-            agentRuntimeArn=AGENT_ARN,
-            traceId=trace_id,
-            payload=payload,
+        # Invoke the agent
+        response_stream = bedrock_agent_runtime_client.invoke_agent(
+            agentId=agent_id,
+            agentAliasId=agent_alias_id,
+            sessionId=session_id,
+            inputText=prompt,
         )
-        logger.info("Bedrock Agent Runtime response received: %s", type(response))
 
-        # Process the response
-        return process_agentcore_response(response)
+        # Process the streaming response
+        final_response = ""
+        for event in response_stream["completion"]:
+            if "chunk" in event:
+                chunk = event["chunk"]
+                final_response += chunk["bytes"].decode("utf-8")
+
+        logger.info("Agent invocation successful. Response length: %d", len(final_response))
+        return final_response
 
     except Exception as e:
-        logger.error("Error calling AgentCore runtime: %s", e, exc_info=True)
-        logger.info("AgentCore runtime failed. Returning graceful fallback response.")
+        logger.error("Error calling invoke_agent: %s", e, exc_info=True)
+        logger.info("invoke_agent failed. Returning graceful fallback response.")
         return get_fallback_response(prompt)
 
 
@@ -226,59 +238,9 @@ def get_fallback_response(prompt: str) -> str:
     )
 
 
-def process_agentcore_response(response: Dict[str, Any]) -> str:
+async def get_conversation_history(session_id: str, k: int = 10) -> list:
     """
-    Process the AgentCore response and extract the text content from StreamingBody.
-    This function handles multiple possible content types from the service.
-    """
-    try:
-        content_type = response.get("contentType", "")
-        logger.info("Processing response with content type: %s", content_type)
-        streaming_body = response.get("response")
-
-        if not streaming_body:
-            return ""
-
-        # Case 1: Handle text/event-stream responses (most common for AgentCore)
-        if "text/event-stream" in content_type:
-            content = []
-            if hasattr(streaming_body, "iter_lines"):
-                for line in streaming_body.iter_lines(chunk_size=10):
-                    if line:
-                        decoded_line = line.decode("utf-8")
-                        # Strip the "data: " prefix if present
-                        if decoded_line.startswith("data: "):
-                            content.append(decoded_line[6:])
-                        else:
-                            content.append(decoded_line)
-                return "\n".join(content)
-
-        # Case 2: Handle application/json responses
-        elif content_type == "application/json":
-            if hasattr(streaming_body, "read"):
-                json_content = streaming_body.read().decode("utf-8")
-                parsed = json.loads(json_content)
-                return parsed.get("response", str(parsed))
-
-        # Case 3: Fallback for other content types or if stream handling fails
-        if hasattr(streaming_body, "read"):
-            return streaming_body.read().decode("utf-8")
-        if hasattr(streaming_body, "iter_lines"):
-            return "\n".join(
-                [line.decode("utf-8") for line in streaming_body.iter_lines() if line]
-            )
-
-        # Final fallback if body is not readable in a standard way
-        return str(streaming_body)
-
-    except Exception as e:
-        logger.error("Error processing AgentCore response: %s", e, exc_info=True)
-        return f"Error processing response: {e}"
-
-
-async def get_conversation_history(session_id: str, k: int = 5) -> list:
-    """
-    Get conversation history from AgentCore memory using the boto3 fallback method.
+    Get conversation history from AgentCore memory using the bedrock-agentcore-control client.
     """
     if not AGENTCORE_MEMORY_ID:
         logger.warning("AGENTCORE_MEMORY_ID is not set. Cannot retrieve history.")
@@ -286,47 +248,34 @@ async def get_conversation_history(session_id: str, k: int = 5) -> list:
 
     try:
         logger.info(
-            "Getting history for memoryId: %s, sessionId: %s",
-            AGENTCORE_MEMORY_ID,
-            session_id,
+            "Getting history for memoryId: %s", AGENTCORE_MEMORY_ID
         )
 
-        # Use a ThreadPoolExecutor for the synchronous boto3 call
         loop = asyncio.get_event_loop()
         with ThreadPoolExecutor() as executor:
             response = await loop.run_in_executor(
                 executor,
-                lambda: agentcore_client.get_memory(
-                    memoryId=AGENTCORE_MEMORY_ID,
-                    # Note: The boto3 get_memory call does not currently use sessionId
-                    # or other fine-grained filters like the MemoryClient does.
-                    # It returns the whole memory content. We filter manually.
+                lambda: bedrock_agentcore_control_client.get_memory(
+                    memoryId=AGENTCORE_MEMORY_ID
                 ),
             )
 
-        # Extract and format memory content
         messages = []
         if "memoryContents" in response:
-            # The memoryContents is a list of events. Each event can have multiple messages.
-            # This logic mimics the MemoryClient's turn-based structure.
             for content in response["memoryContents"]:
-                # Simple parsing assuming "User: ..." and "Agent: ..." format
                 text = content.get("content", "")
                 if text.lower().startswith("user:"):
                     messages.append({"role": "user", "content": text[5:].strip()})
                 elif text.lower().startswith("agent:"):
                     messages.append({"role": "agent", "content": text[6:].strip()})
                 else:
-                    # Handle system messages or other formats if necessary
                     messages.append({"role": "system", "content": text})
 
         logger.info("Retrieved %d messages from history", len(messages))
-
-        # Return the last k messages
-        return messages[-k:]
+        return messages[-k * 2:] # k turns = k * 2 messages
 
     except Exception as e:
-        logger.error("Error getting conversation history: %s", e)
+        logger.error("Error getting conversation history: %s", e, exc_info=True)
         return []
 
 
@@ -346,7 +295,7 @@ async def store_conversation_turn(session_id: str, user_message: str, assistant_
         with ThreadPoolExecutor() as executor:
             response = await loop.run_in_executor(
                 executor,
-                lambda: agentcore_client.get_memory(memoryId=AGENTCORE_MEMORY_ID),
+                lambda: bedrock_agentcore_control_client.get_memory(memoryId=AGENTCORE_MEMORY_ID),
             )
 
         existing_contents = response.get("memoryContents", [])
@@ -363,7 +312,7 @@ async def store_conversation_turn(session_id: str, user_message: str, assistant_
         with ThreadPoolExecutor() as executor:
             await loop.run_in_executor(
                 executor,
-                lambda: agentcore_client.update_memory(
+                lambda: bedrock_agentcore_control_client.update_memory(
                     memoryId=AGENTCORE_MEMORY_ID,
                     memoryContents=updated_contents,
                 ),
@@ -371,7 +320,6 @@ async def store_conversation_turn(session_id: str, user_message: str, assistant_
         logger.info("Successfully stored updated conversation history with %d entries.", len(updated_contents))
 
     except Exception as e:
-        # Log error but don't fail the main request
         logger.error("Error storing conversation turn: %s", e, exc_info=True)
 
 
