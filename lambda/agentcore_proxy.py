@@ -26,11 +26,8 @@ AGENT_ARN = os.environ.get(
 )
 AGENTCORE_MEMORY_ID = os.environ.get("AGENTCORE_MEMORY_ID", "memory_io2n5-94iksj6Jr7")
 
-# Initialize Boto3 clients
-# Client for invoking the agent
+# Initialize the Bedrock AgentCore client for all operations
 agentcore_client = boto3.client("bedrock-agentcore")
-# Client for memory operations
-agentcore_control_client = boto3.client("bedrock-agentcore-control")
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -273,7 +270,7 @@ def process_agentcore_response(response: Dict[str, Any]) -> str:
 
 async def get_conversation_history(session_id: str, k: int = 10) -> list:
     """
-    Get conversation history from AgentCore memory using the agentcore_control_client.
+    Get conversation history from AgentCore memory by listing events for a session.
     """
     if not AGENTCORE_MEMORY_ID:
         logger.warning("AGENTCORE_MEMORY_ID is not set. Cannot retrieve history.")
@@ -281,31 +278,35 @@ async def get_conversation_history(session_id: str, k: int = 10) -> list:
 
     try:
         logger.info(
-            "Getting history for memoryId: %s", AGENTCORE_MEMORY_ID
+            "Getting history for memoryId: %s, sessionId: %s",
+            AGENTCORE_MEMORY_ID,
+            session_id,
         )
 
         loop = asyncio.get_event_loop()
         with ThreadPoolExecutor() as executor:
             response = await loop.run_in_executor(
                 executor,
-                lambda: agentcore_control_client.get_memory(
-                    memoryId=AGENTCORE_MEMORY_ID
+                lambda: agentcore_client.list_events(
+                    memoryId=AGENTCORE_MEMORY_ID,
+                    filter={"sessionId": session_id},
+                    maxResults=k * 2, # Get k turns
                 ),
             )
 
         messages = []
-        if "memoryContents" in response:
-            for content in response["memoryContents"]:
-                text = content.get("content", "")
-                if text.lower().startswith("user:"):
-                    messages.append({"role": "user", "content": text[5:].strip()})
-                elif text.lower().startswith("agent:"):
-                    messages.append({"role": "agent", "content": text[6:].strip()})
-                else:
-                    messages.append({"role": "system", "content": text})
+        if "events" in response:
+            for event in sorted(response["events"], key=lambda x: x["eventTimestamp"]):
+                for part in event.get("payload", []):
+                    if "conversational" in part:
+                        conv = part["conversational"]
+                        messages.append({
+                            "role": conv["role"].lower(),
+                            "content": conv["content"]["text"],
+                        })
 
         logger.info("Retrieved %d messages from history", len(messages))
-        return messages[-k * 2:]
+        return messages
 
     except Exception as e:
         logger.error("Error getting conversation history: %s", e, exc_info=True)
