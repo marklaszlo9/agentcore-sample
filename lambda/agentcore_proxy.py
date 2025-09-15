@@ -10,6 +10,7 @@ import logging
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, UTC
 from typing import Any, Dict
 
 import boto3
@@ -272,7 +273,7 @@ def process_agentcore_response(response: Dict[str, Any]) -> str:
 
 async def get_conversation_history(session_id: str, k: int = 10) -> list:
     """
-    Get conversation history from AgentCore memory using the bedrock-agentcore-control client.
+    Get conversation history from AgentCore memory using the agentcore_control_client.
     """
     if not AGENTCORE_MEMORY_ID:
         logger.warning("AGENTCORE_MEMORY_ID is not set. Cannot retrieve history.")
@@ -313,46 +314,48 @@ async def get_conversation_history(session_id: str, k: int = 10) -> list:
 
 async def store_conversation_turn(session_id: str, user_message: str, assistant_message: str):
     """
-    Store a conversation turn by appending to the history in AgentCore memory.
+    Store a conversation turn by creating events in AgentCore memory.
     """
     if not AGENTCORE_MEMORY_ID:
         logger.warning("AGENTCORE_MEMORY_ID is not set. Cannot store history.")
         return
 
     try:
-        logger.info("Storing turn for memoryId: %s", AGENTCORE_MEMORY_ID)
+        logger.info("Storing turn for memoryId: %s, sessionId: %s", AGENTCORE_MEMORY_ID, session_id)
         loop = asyncio.get_event_loop()
 
-        # 1. Get current memory
-        with ThreadPoolExecutor() as executor:
-            response = await loop.run_in_executor(
-                executor,
-                lambda: agentcore_control_client.get_memory(memoryId=AGENTCORE_MEMORY_ID),
-            )
-
-        existing_contents = response.get("memoryContents", [])
-        logger.info("Retrieved %d existing memory entries.", len(existing_contents))
-
-        # 2. Append new turn
-        new_contents = [
-            {"content": f"User: {user_message}", "contentType": "TEXT"},
-            {"content": f"Agent: {assistant_message}", "contentType": "TEXT"},
+        # The payload is a list of two events, one for the user and one for the assistant
+        payload = [
+            {
+                "conversational": {
+                    "content": {"text": user_message},
+                    "role": "USER",
+                }
+            },
+            {
+                "conversational": {
+                    "content": {"text": assistant_message},
+                    "role": "ASSISTANT",
+                }
+            },
         ]
-        updated_contents = existing_contents + new_contents
 
-        # 3. Put updated memory
+        # We can use a single create_event call to store the turn
         with ThreadPoolExecutor() as executor:
             await loop.run_in_executor(
                 executor,
-                lambda: agentcore_control_client.update_memory(
+                lambda: agentcore_client.create_event(
                     memoryId=AGENTCORE_MEMORY_ID,
-                    memoryContents=updated_contents,
+                    sessionId=session_id,
+                    actorId="user1", # A placeholder actorId
+                    eventTimestamp=datetime.now(UTC),
+                    payload=payload
                 ),
             )
-        logger.info("Successfully stored updated conversation history with %d entries.", len(updated_contents))
+        logger.info("Successfully created conversation event.")
 
     except Exception as e:
-        logger.error("Error storing conversation turn: %s", e, exc_info=True)
+        logger.error("Error creating conversation event: %s", e, exc_info=True)
 
 
 def create_error_response(status_code: int, message: str) -> Dict[str, Any]:
