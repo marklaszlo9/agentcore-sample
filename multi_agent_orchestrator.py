@@ -204,7 +204,7 @@ class EnvisionMultiAgentOrchestrator:
         self.region = region
         self.memory_id = memory_id
         self.session_id = session_id
-        self.actor_id = f"envision_orchestrator_{self.session_id}" if self.session_id else "default_actor"
+        # We'll set actor_id dynamically based on the session_id in each request
         self.branch_name = "main"
 
         # Initialize AgentCore client and memory with fallbacks
@@ -400,15 +400,40 @@ Your goal is to educate and inform about sustainability topics in a way that's a
             # Step 3: Store in memory for context
             if self.memory_client and self.memory_id:
                 try:
-                    await self.memory_client.create_event(
-                        memory_id=self.memory_id,
-                        actor_id=self.actor_id,
-                        session_id=session_id,
-                        messages=[
-                            (user_query, "user"),
-                            (response, "assistant"),
-                        ],
-                    )
+                    from datetime import datetime
+                    import uuid
+                    
+                    # Create the payload with the conversation messages
+                    payload = {
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": {"text": user_query}
+                            },
+                            {
+                                "role": "assistant", 
+                                "content": {"text": response}
+                            }
+                        ]
+                    }
+
+                    # Use the correct create_event API format
+                    event_timestamp = datetime.utcnow()
+                    actor_id = f"user_{session_id}"  # Use session-specific actor_id
+                    params = {
+                        "memoryId": self.memory_id,
+                        "actorId": actor_id,
+                        "sessionId": session_id,
+                        "eventTimestamp": event_timestamp,
+                        "payload": payload,
+                        "clientToken": str(uuid.uuid4()),
+                    }
+
+                    logger.info(f"Storing conversation in memory: {self.memory_id}")
+                    response_data = self.memory_client.create_event(**params)
+                    event = response_data["event"]
+                    logger.info(f"✅ Created memory event: {event['eventId']}")
+                    
                 except Exception as e:
                     logger.warning(f"Could not store conversation in memory: {e}")
 
@@ -428,7 +453,7 @@ Your goal is to educate and inform about sustainability topics in a way that's a
                 try:
                     history = await self.memory_client.get_last_k_turns(
                         memory_id=self.memory_id,
-                        actor_id=self.actor_id,
+                        actor_id=f"user_{session_id}",
                         session_id=session_id,
                         k=10,
                         branch_name=self.branch_name,
@@ -502,7 +527,7 @@ Analyze this question and decide which agent should handle it."""
                 try:
                     history = await self.memory_client.get_last_k_turns(
                         memory_id=self.memory_id,
-                        actor_id=self.actor_id,
+                        actor_id=f"user_{session_id}",
                         session_id=session_id,
                         k=6,
                         branch_name=self.branch_name,
@@ -546,7 +571,7 @@ Please provide a detailed response based on the Envision Sustainable Infrastruct
                 try:
                     history = await self.memory_client.get_last_k_turns(
                         memory_id=self.memory_id,
-                        actor_id=self.actor_id,
+                        actor_id=f"user_{session_id}",
                         session_id=session_id,
                         k=6,
                         branch_name=self.branch_name,
@@ -602,7 +627,7 @@ Please provide a comprehensive response on this sustainability topic."""
         try:
             history = await self.memory_client.get_last_k_turns(
                 memory_id=self.memory_id,
-                actor_id=self.actor_id,
+                actor_id=f"user_{session_id}",
                 session_id=session_id,
                 k=k,
                 branch_name=self.branch_name,

@@ -152,7 +152,8 @@ class AgentCoreRuntime:
             if MULTI_AGENT_AVAILABLE and self.use_multi_agent:
                 try:
                     self.multi_agent_orchestrator = EnvisionMultiAgentOrchestrator(
-                        region=self.region
+                        region=self.region,
+                        memory_id=self.memory_id
                     )
                     logger.info("✅ Multi-agent orchestrator initialized successfully")
                 except Exception as e:

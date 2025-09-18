@@ -6,6 +6,10 @@ Parameters:
     Type: String
     Description: 'ARN of the AgentCore runtime'
     Default: 'arn:aws:bedrock-agentcore:us-east-1:886436945166:runtime/hosted_agent_sample-KEQNVq8Whv'
+  AgentCoreMemoryId:
+    Type: String
+    Description: 'AgentCore Memory ID for conversation history'
+    Default: 'memory_io2n5-94iksj6Jr7'
   DomainName:
     Type: String
     Description: 'Custom domain name (optional)'
@@ -93,7 +97,11 @@ Resources:
               - Effect: Allow
                 Action:
                   - bedrock-agentcore:InvokeAgentRuntime
-                Resource: !Sub '${AgentRuntimeArn}*'
+                  - bedrock-agentcore:GetMemory
+                  - bedrock-agentcore:ListMemories
+                Resource: 
+                  - !Sub '${AgentRuntimeArn}*'
+                  - !Sub 'arn:aws:bedrock-agentcore:${AWS::Region}:${AWS::AccountId}:memory/*'
         - PolicyName: CognitoAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -119,6 +127,7 @@ Resources:
       Environment:
         Variables:
           AGENT_ARN: !Ref AgentRuntimeArn
+          AGENTCORE_MEMORY_ID: !Ref AgentCoreMemoryId
           COGNITO_USER_POOL_ID: !Ref CognitoUserPoolId
           COGNITO_CLIENT_ID: !Ref CognitoClientId
       Code:
