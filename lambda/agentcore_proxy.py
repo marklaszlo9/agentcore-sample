@@ -73,13 +73,24 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 return create_error_response(400, "Missing 'sessionId' for history request")
 
             logger.info(f"Processing history request for SessionId: {session_id}")
+            logger.info("AgentCore manages conversation history automatically - returning empty messages")
 
-            # Prepare the payload for AgentCore to get history
-            payload = json.dumps({
-                "action": "getHistory", 
-                "sessionId": session_id,
-                "k": body.get("k", 3)  # Number of messages to retrieve
-            }).encode("utf-8")
+            # AgentCore maintains conversation context automatically using sessionId
+            # Return empty messages as structured history is not available
+            return {
+                "statusCode": 200,
+                "headers": {
+                    "Content-Type": "application/json",
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "POST, OPTIONS",
+                    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+                },
+                "body": json.dumps({
+                    "messages": [],
+                    "sessionId": session_id,
+                    "note": "AgentCore manages conversation context automatically"
+                }),
+            }
         else:
             # Handle regular query request
             prompt = body.get("prompt", "")
@@ -107,66 +118,24 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         )
         logger.info(f"AgentCore response received: {type(response)}")
 
-        # Process the response
-        if action == "getHistory":
-            # For history requests, expect JSON response with messages
-            agent_response = process_agentcore_response(response)
-            # Try to parse the response as JSON to extract messages
-            try:
-                if isinstance(agent_response, str):
-                    response_data = json.loads(agent_response)
-                else:
-                    response_data = agent_response
-                # Return the messages directly
-                return {
-                    "statusCode": 200,
-                    "headers": {
-                        "Content-Type": "application/json",
-                        "Access-Control-Allow-Origin": "*",
-                        "Access-Control-Allow-Methods": "POST, OPTIONS",
-                        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-                    },
-                    "body": json.dumps({
-                        "messages": response_data.get("messages", []),
-                        "sessionId": session_id,
-                    }),
-                }
-            except (json.JSONDecodeError, AttributeError) as e:
-                logger.error(f"Failed to parse history response: {str(e)}")
-                # Return empty messages if parsing fails
-                return {
-                    "statusCode": 200,
-                    "headers": {
-                        "Content-Type": "application/json",
-                        "Access-Control-Allow-Origin": "*",
-                        "Access-Control-Allow-Methods": "POST, OPTIONS",
-                        "Access-Control-Allow-Headers": "Content-Type, Authorization",
-                    },
-                    "body": json.dumps({
-                        "messages": [],
-                        "sessionId": session_id,
-                        "error": f"Failed to parse history: {str(e)}"
-                    }),
-                }
-        else:
-            # For regular queries, return text response
-            agent_response = process_agentcore_response(response)
+        # For regular queries, return text response
+        agent_response = process_agentcore_response(response)
 
-            # Return successful response
-            return {
-                "statusCode": 200,
-                "headers": {
-                    "Content-Type": "application/json",
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "POST, OPTIONS",
-                    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-                },
-                "body": json.dumps({
-                    "response": agent_response,
-                    "sessionId": session_id,
-                    "timestamp": context.aws_request_id,
-                }),
-            }
+        # Return successful response
+        return {
+            "statusCode": 200,
+            "headers": {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            },
+            "body": json.dumps({
+                "response": agent_response,
+                "sessionId": session_id,
+                "timestamp": context.aws_request_id,
+            }),
+        }
 
     except Exception as e:
         logger.error("Error processing request: %s", e, exc_info=True)

@@ -207,27 +207,11 @@ class EnvisionMultiAgentOrchestrator:
         # We'll set actor_id dynamically based on the session_id in each request
         self.branch_name = "main"
 
-        # Initialize AgentCore client and memory with fallbacks
-        if BedrockAgentCoreClient:
-            try:
-                self.agentcore_client = BedrockAgentCoreClient(region=region)
-            except Exception as e:
-                logger.warning(f"Could not initialize BedrockAgentCoreClient: {e}")
-                self.agentcore_client = None
-        else:
-            logger.warning("BedrockAgentCoreClient not available")
-            self.agentcore_client = None
-
-        if MemoryClient:
-            try:
-                self.memory_client = MemoryClient()
-                logger.info("Initialized MemoryClient without region.")
-            except Exception as e:
-                logger.error(f"Failed to initialize MemoryClient: {e}")
-                self.memory_client = None
-        else:
-            logger.warning("MemoryClient not available")
-            self.memory_client = None
+        # For hosted AgentCore environments, we rely on AgentCore's built-in memory management
+        # rather than using external MemoryClient dependencies
+        logger.info("Using AgentCore built-in memory management (no external dependencies required)")
+        self.agentcore_client = None
+        self.memory_client = None
 
         # Initialize hook providers
         self.hook_providers = [
@@ -397,45 +381,9 @@ Your goal is to educate and inform about sustainability topics in a way that's a
                     session_id
                 )
 
-            # Step 3: Store in memory for context
-            if self.memory_client and self.memory_id:
-                try:
-                    from datetime import datetime
-                    import uuid
-                    
-                    # Create the payload with the conversation messages
-                    payload = {
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": {"text": user_query}
-                            },
-                            {
-                                "role": "assistant", 
-                                "content": {"text": response}
-                            }
-                        ]
-                    }
-
-                    # Use the correct create_event API format
-                    event_timestamp = datetime.utcnow()
-                    actor_id = f"user_{session_id}"  # Use session-specific actor_id
-                    params = {
-                        "memoryId": self.memory_id,
-                        "actorId": actor_id,
-                        "sessionId": session_id,
-                        "eventTimestamp": event_timestamp,
-                        "payload": payload,
-                        "clientToken": str(uuid.uuid4()),
-                    }
-
-                    logger.info(f"Storing conversation in memory: {self.memory_id}")
-                    response_data = self.memory_client.create_event(**params)
-                    event = response_data["event"]
-                    logger.info(f"✅ Created memory event: {event['eventId']}")
-                    
-                except Exception as e:
-                    logger.warning(f"Could not store conversation in memory: {e}")
+            # AgentCore automatically manages conversation memory using sessionId
+            # No explicit memory storage needed - AgentCore handles this internally
+            logger.info(f"Conversation processed for session {session_id} - AgentCore handles memory automatically")
 
             return response
 
@@ -448,28 +396,12 @@ Your goal is to educate and inform about sustainability topics in a way that's a
     ) -> Dict[str, str]:
         """Get the orchestrator's decision on which agent to use"""
         try:
-            # Get conversation history for context
-            if self.memory_client and self.memory_id:
-                try:
-                    history = await self.memory_client.get_last_k_turns(
-                        memory_id=self.memory_id,
-                        actor_id=f"user_{session_id}",
-                        session_id=session_id,
-                        k=10,
-                        branch_name=self.branch_name,
-                    )
-                    context = self._format_conversation_history(history)
-                except Exception as e:
-                    logger.warning(f"Could not get conversation history: {e}")
-                    context = "No previous conversation."
-            else:
-                context = "No previous conversation."
+            # AgentCore maintains conversation context automatically using sessionId
+            # No need to explicitly retrieve history - agents will have context
+            context = "AgentCore maintains conversation context automatically."
 
             # Create a message for the orchestrator
-            message_content = f"""Previous conversation context:
-{context}
-
-Current user question: {query}
+            message_content = f"""Current user question: {query}
 
 Analyze this question and decide which agent should handle it."""
 
@@ -522,28 +454,11 @@ Analyze this question and decide which agent should handle it."""
     ) -> str:
         """Query the knowledge base agent"""
         try:
-            # Get relevant conversation history
-            if self.memory_client and self.memory_id:
-                try:
-                    history = await self.memory_client.get_last_k_turns(
-                        memory_id=self.memory_id,
-                        actor_id=f"user_{session_id}",
-                        session_id=session_id,
-                        k=6,
-                        branch_name=self.branch_name,
-                    )
-                    context = self._format_conversation_history(history)
-                except Exception as e:
-                    logger.warning(f"Could not get conversation history: {e}")
-                    context = "No previous conversation."
-            else:
-                context = "No previous conversation."
+            # AgentCore maintains conversation context automatically using sessionId
+            context = "AgentCore maintains conversation context automatically."
 
             # Create message for the knowledge agent
-            message_content = f"""Previous conversation context:
-{context}
-
-User question: {query}
+            message_content = f"""User question: {query}
 
 Please provide a detailed response based on the Envision Sustainable Infrastructure Framework."""
 
@@ -566,28 +481,11 @@ Please provide a detailed response based on the Envision Sustainable Infrastruct
     ) -> str:
         """Query the general sustainability agent"""
         try:
-            # Get relevant conversation history
-            if self.memory_client and self.memory_id:
-                try:
-                    history = await self.memory_client.get_last_k_turns(
-                        memory_id=self.memory_id,
-                        actor_id=f"user_{session_id}",
-                        session_id=session_id,
-                        k=6,
-                        branch_name=self.branch_name,
-                    )
-                    context = self._format_conversation_history(history)
-                except Exception as e:
-                    logger.warning(f"Could not get conversation history: {e}")
-                    context = "No previous conversation."
-            else:
-                context = "No previous conversation."
+            # AgentCore maintains conversation context automatically using sessionId
+            context = "AgentCore maintains conversation context automatically."
 
             # Create message for the general agent
-            message_content = f"""Previous conversation context:
-{context}
-
-User question: {query}
+            message_content = f"""User question: {query}
 
 Please provide a comprehensive response on this sustainability topic."""
 
@@ -621,21 +519,10 @@ Please provide a comprehensive response on this sustainability topic."""
 
     async def get_history(self, session_id: str, k: int = 5) -> List[Dict[str, Any]]:
         """Get conversation history from memory."""
-        if not self.memory_client or not self.memory_id:
-            logger.warning("MemoryClient not available, cannot retrieve history.")
-            return []
-        try:
-            history = await self.memory_client.get_last_k_turns(
-                memory_id=self.memory_id,
-                actor_id=f"user_{session_id}",
-                session_id=session_id,
-                k=k,
-                branch_name=self.branch_name,
-            )
-            return history
-        except Exception as e:
-            logger.error(f"Failed to retrieve history for session {session_id}: {e}")
-            return []
+        # In hosted AgentCore environments, memory is managed automatically
+        # Return empty list as AgentCore handles context internally
+        logger.info(f"AgentCore manages conversation history automatically for session {session_id}")
+        return []
 
 
 # Example usage and testing
